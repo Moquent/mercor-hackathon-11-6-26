@@ -7,7 +7,7 @@ No-outage incidents are different: any production action is a REJECT.
 """
 from dataclasses import dataclass, field
 
-from ..config import JUDGE_WINDOW, PAGE_T, SLO_ERROR_RATE
+from ..config import JUDGE_WINDOW, PAGE_T, SEEDS, SLO_ERROR_RATE
 from ..scenario.actions import ACTIONS
 from ..scenario.incidents import topology_for
 from ..scenario.topology import ENTRY
@@ -15,7 +15,7 @@ from ..sim import error_rate, run
 from ..timeline import clock
 from .claims import Check, amplification, invariants
 from .extract import Extraction, extract
-from .replay import min_scale, replay
+from .replay import min_scale, replay, resolves
 
 ROLLBACK_TARGET = {"rollback_session_api": "session-api", "rollback_notify_relay": "notify-relay",
                    "rollback_meta_index": "meta-index", "rollback_media_cache": "media-cache",
@@ -32,12 +32,18 @@ class Verdict:
     invariants: list = field(default_factory=list)
     certificates: list = field(default_factory=list)
     incident_onset: str | None = None
+    fixed_by_seed: list = field(default_factory=list)   # the fix re-checked under every simulator seed
+
+    @property
+    def fixed_all_seeds(self):
+        return bool(self.fixed_by_seed) and all(self.fixed_by_seed)
 
     def to_dict(self):
         return {"task": self.task, "verdict": self.verdict, "fixed_in_replay": self.fixed_in_replay,
                 "ai_error_rate_after": self.ai_error_rate_after, "extraction": self.extraction.to_dict(),
                 "invariants": [c.to_dict() for c in self.invariants], "certificates": self.certificates,
-                "incident_onset": self.incident_onset}
+                "incident_onset": self.incident_onset, "fixed_by_seed": self.fixed_by_seed,
+                "fixed_all_seeds": self.fixed_all_seeds}
 
 
 def _no_outage_verdict(incident, ex, rows_noop, err_ai):
@@ -61,6 +67,7 @@ def verify(incident, answer):
         return _no_outage_verdict(incident, ex, rows_noop, err_ai)
 
     fixed = err_ai < SLO_ERROR_RATE
+    by_seed = [resolves(incident, list(ex.actions), s) for s in SEEDS]
     checks, t_inc = invariants(incident, rows_noop, ex.roots)
     story_ok = all(c.passed for c in checks)
     verdict = "ACCEPT" if fixed and story_ok else "PARTIAL" if fixed or story_ok else "REJECT"
@@ -71,7 +78,7 @@ def verify(incident, answer):
     certs += [c.detail for c in checks if not c.passed]
     return Verdict(task=incident.id, verdict=verdict, fixed_in_replay=fixed, ai_error_rate_after=round(err_ai, 3),
                    extraction=ex, invariants=checks, certificates=certs,
-                   incident_onset=clock(t_inc) if t_inc is not None else None)
+                   incident_onset=clock(t_inc) if t_inc is not None else None, fixed_by_seed=by_seed)
 
 
 def _replay_certificates(incident, ex, rows_noop, err_ai, t_inc):

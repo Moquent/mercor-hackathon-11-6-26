@@ -1,0 +1,22 @@
+{
+  "task": "14-double-fault",
+  "run": 4,
+  "model_requested": "gpt-6-luna",
+  "model_reported": "gpt-6-luna",
+  "asked_at_utc": "2026-11-06T18:49:36.257137+00:00",
+  "prompt_sha256": "1ebf2d70c5c5ed1de5e0ef960b74e80ac13742877f6b9fca969d8bd377c0f22b",
+  "prompt_file": "tasks/14-double-fault/prompt.txt",
+  "usage": {
+    "input_tokens": 7364,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 7361
+    },
+    "output_tokens": 2350,
+    "output_tokens_details": {
+      "reasoning_tokens": 1801
+    },
+    "total_tokens": 9714
+  },
+  "answer": "There are **two concurrent faults**, not one:\n\n- **`meta-index` authentication failure:** production replica `mi-1` is using `lw-meta-key-2`, the staging key. Its steady 30% error rate begins after the key event and persists independently of the later deploy.\n- **`notify-relay` quota saturation:** the `session-api` v4.12.0 deploy started the bulk DELETE cleanup at 14:02:05. Notify traffic jumped from about 200 req/s to over 1,500 req/s by 14:02:15, exceeding Chatline\u2019s global 1,000 req/s quota. The resulting 429s and retries drive the relay errors and contribute to session failures and latency.\n\n**Do now, in this order:**\n\n1. **Stop the `session-api` msg-cleanup bulk DELETE job** started at 14:02:05; prevent it from restarting. The telemetry does not include a job ID.\n2. **Cap Chatline forwarding at no more than 1,000 req/s** and honor `retry_after=1.0s` for 429s; do not immediately retry those responses. This matches the stated global quota and prevents retry amplification while the cleanup stops.\n3. **Remove `meta-index` replica `mi-1` from the production serving pool** (one of three) until its credential is corrected. Then set it to the valid production key\u2014not `lw-meta-key-2`\u2014and return it to service. The telemetry does **not** identify the valid production key\u2019s literal value, so it cannot safely be specified here.\n\nThe clip-preview errors are off the listener request path and are not implicated by these metrics.\n\n```json\n{\"root_cause_service\":\"session-api cleanup job and meta-index mi-1 credential; notify-relay is the quota-saturated downstream service\",\"mechanism\":\"The bulk DELETE cleanup drove Chatline traffic above its 1000 req/s global quota, causing 429s and retries; separately, production meta-index replica mi-1 uses the staging key lw-meta-key-2 and returns 401s.\",\"actions\":[\"Stop and prevent restart of the session-api msg-cleanup bulk DELETE job started at 14:02:05.\",\"Cap Chatline forwarding at no more than 1000 req/s; honor 429 retry_after=1.0s and do not immediately retry 429 responses.\",\"Remove meta-index replica mi-1 (1 of 3) from the production serving pool; replace lw-meta-key-2 with the valid production key, whose literal value is not present in the telemetry, then return mi-1 to service.\"]}\n```"
+}

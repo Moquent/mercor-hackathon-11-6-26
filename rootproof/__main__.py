@@ -4,6 +4,7 @@
     python3 -m rootproof ask                 freeze prompts and ask the subject AI for simulated incidents
     python3 -m rootproof ask-rcaeval         ask the subject AI about the prepared RCAEval cases
     python3 -m rootproof prepare-rcaeval DIR build RCAEval packets from downloaded cases (needs pandas, pyarrow)
+    python3 -m rootproof rcaeval-traces     per-edge call stats from the real RCAEval traces (needs pandas, pyarrow)
     python3 -m rootproof prompt ID           print the exact prompt for one incident
 """
 import sys
@@ -28,6 +29,9 @@ def main(argv):
     if cmd == "prepare-rcaeval":
         from .rcaeval.prepare import prepare_all
         return prepare_all(rest[0])
+    if cmd == "rcaeval-traces":
+        from .rcaeval.traces import aggregate_all
+        return aggregate_all()
     if cmd == "prompt":
         from .packets import prompt
         from .scenario.incidents import INCIDENTS

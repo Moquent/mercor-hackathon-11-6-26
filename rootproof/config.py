@@ -13,7 +13,8 @@ JEV_CACHE = os.path.join(RESULTS, "jev_cache.json")
 
 SUBJECT_MODEL = "gpt-6-luna"
 JEV_MODEL = "jev-latest"
-RUNS = (1, 2, 3)
+SEEDS = (0, 1, 2, 3, 4)        # simulator seeds: a fix counts as robust only if it holds on all of them
+RUNS = (1, 2, 3, 4, 5)   # official first attempt is run 1; the rest estimate how often the verdict flips
 
 SIM_T = 600                  # simulated seconds per replay
 PAGE_T = 300                 # the on-call is paged here; actions apply from here

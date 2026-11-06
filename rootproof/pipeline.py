@@ -18,7 +18,7 @@ from .scenario.topology import ENTRY
 from .sim import run
 from .timeline import clock
 from .verify.extract import parse_json_block
-from .verify.replay import ground_truth, ops_for, replay
+from .verify.replay import ground_truth, ops_for, replay, resolves_on_all_seeds
 from .verify.verdict import verify
 from .report.build import build
 from .report.data import build_site_data
@@ -106,8 +106,10 @@ def run_evaluation():
     write_ground_truth(INCIDENTS, verdicts, truth)
     data = build_site_data(INCIDENTS, verdicts, truth, aud)
     build(data, os.path.join(RESULTS, "report.html"))
+    robust = {inc.id: [resolves_on_all_seeds(inc, list(s)) for s in truth[inc.id]] for inc in INCIDENTS}
     summary = {"verdicts": [{"kind": k, "task": t, "run": r, **v.to_dict()} for (k, t, r), v in verdicts.items()],
                "ground_truth": {t: [list(s) for s in v] for t, v in truth.items()},
+               "ground_truth_robust": robust,
                "extraction_audit": aud,
                "causal_chains": {t["id"]: t["chain"] for t in data["tasks"]},
                "rcaeval": data["rcaeval"], "stats": data["stats"]}
