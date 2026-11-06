@@ -207,6 +207,14 @@ function revealTruth() {   // during verification: show where the faults really 
   const gB = $('#g-badges');
   for (const f of S.sim.faults || []) {
     const svc = Array.isArray(f) ? f[1] : (f.svc || f.service || f.target); if (!S.nodes[svc]) continue;
+    const link = !Array.isArray(f) && f.link && edgeFor(svc, f.link);
+    if (link) {   // a network fault lives on the link, not on either service
+      link.el.classList.add('origin', 'hl');
+      const [x1, y1] = pos(svc), [x2, y2] = pos(f.link);
+      const g = s('g', { class: 'origin-mark', transform: `translate(${(x1 + x2) / 2},${(y1 + y2) / 2})` }, gB);
+      s('path', { d: 'M0 -9 L8 4 L-8 4 Z' }, g); s('text', { x: 12, y: 4, text: `TRUE FAULT · ${f.mode || 'link'}` }, g);
+      continue;
+    }
     const [x, y] = pos(svc), b = nodeBox(svc);
     const g = s('g', { class: 'origin-mark', transform: `translate(${x - b.w / 2 - 4},${y - b.h / 2 - 4})` }, gB);
     s('path', { d: 'M0 -9 L8 4 L-8 4 Z' }, g); s('text', { x: -18, y: -12, text: 'TRUE FAULT' }, g);

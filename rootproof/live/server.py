@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ..agent.run import load
 from ..agent.tools import SCHEMAS
+from ..config import RESULTS
 from ..scenario.topology import ENTRY, topology
 from . import bus, cases, stream
 
@@ -22,12 +23,21 @@ def catalog():
     incidents = [{"id": i.id, "title": i.title, "no_outage": i.no_outage,
                   "kind": "custom" if i.id.startswith("x-") else "packet+agent" if i.id in packet_ids else "agent"}
                  for i in cases.all_incidents()]
+    saved = {}
+    try:
+        with open(os.path.join(RESULTS, "summary.json")) as f:
+            for r in json.load(f).get("investigation", {}).get("runs", []):
+                saved[(r["task"], r["run"])] = r
+    except (OSError, ValueError):
+        pass
     runs = []
     for i in cases.all_incidents():
         for r in (1, 2, 3):
             rec = load(i.id, r)
             if rec:
-                runs.append({"task": i.id, "run": r, "n_steps": len(rec["steps"]), "model": rec.get("model_reported")})
+                s = saved.get((i.id, r))
+                runs.append({"task": i.id, "run": r, "n_steps": len(rec["steps"]), "model": rec.get("model_reported"),
+                             "verdict": s and s["verdict"]["verdict"], "counts": s and s["trace"]["counts"]})
     return {"topology": {"entry": ENTRY, "nodes": nodes, "jobs": {"sub-poller": "docstore", "msg-cleanup": "notify-relay"}},
             "incidents": incidents, "runs": runs,
             "tools": [{"name": s["name"], "description": s["description"]} for s in SCHEMAS],

@@ -20,3 +20,158 @@ services:
     build: .
     profiles: [batch]
     command: ["python", "-m", "unittest", "tests/test_regression.py", "-v"]
+
+  # --- realsystem profile: DAGScope's instrumented services (Sarvesh, commit 5310275), see realsystem/README.md
+  # docker compose --profile realsystem up -d     then: python -m rootproof.dagscope.runner (scenarios 1..4)
+  # Host ports 5433/6380 avoid clashing with a natively installed Postgres/Redis.
+  rs-postgres:
+    image: postgres:16-alpine
+    profiles: [realsystem]
+    environment:
+      POSTGRES_USER: dagscope
+      POSTGRES_PASSWORD: dagscope
+      POSTGRES_DB: dagscope
+    ports: ["5433:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dagscope -d dagscope"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  rs-redis:
+    image: redis:7-alpine
+    profiles: [realsystem]
+    ports: ["6380:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  # One-shot schema creation; every service waits for it to exit 0.
+  rs-init:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: python -m app.database.session
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    depends_on:
+      rs-postgres:
+        condition: service_healthy
+  rs-gateway:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: uvicorn app.gateway.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    ports: ["8000:8000"]
+    depends_on:
+      rs-init:
+        condition: service_completed_successfully
+      rs-redis:
+        condition: service_healthy
+      rs-orders:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8000/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rs-orders:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: uvicorn app.orders.main:app --host 0.0.0.0 --port 8001
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    ports: ["8001:8001"]
+    depends_on:
+      rs-init:
+        condition: service_completed_successfully
+      rs-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8001/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rs-inventory:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: uvicorn app.inventory.main:app --host 0.0.0.0 --port 8002
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    ports: ["8002:8002"]
+    depends_on:
+      rs-init:
+        condition: service_completed_successfully
+      rs-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8002/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rs-worker:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: python -m app.workers.main
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    depends_on:
+      rs-init:
+        condition: service_completed_successfully
+      rs-redis:
+        condition: service_healthy
+      rs-inventory:
+        condition: service_healthy
+  rs-verifier:
+    build: ./realsystem
+    image: dagscope:local
+    profiles: [realsystem]
+    command: uvicorn app.verifier.service:app --host 0.0.0.0 --port 8003
+    environment:
+      DATABASE_URL: postgresql+psycopg://dagscope:dagscope@rs-postgres:5432/dagscope
+      REDIS_URL: redis://rs-redis:6379/0
+      GATEWAY_URL: http://rs-gateway:8000
+      ORDERS_URL: http://rs-orders:8001
+      INVENTORY_URL: http://rs-inventory:8002
+      VERIFIER_URL: http://rs-verifier:8003
+    ports: ["8003:8003"]
+    depends_on:
+      rs-init:
+        condition: service_completed_successfully
+      rs-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8003/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

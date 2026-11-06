@@ -77,6 +77,42 @@ def evaluate():
     return runs, truth, selftest()
 
 
+def error_blame(incident):
+    """The no-model baseline: of the services whose errors rose in the minute before the page, blame the deepest one
+    (none of its own dependencies' errors rose), breaking ties by the size of the rise."""
+    env = Environment(incident)
+    from .config import PAGE_T
+    from .packets import SHOWN
+
+    def rise(n):
+        now = sum(env.at[(t, n)]["err"] for t in range(PAGE_T - 60, PAGE_T)) / 60
+        base = sum(env.at[(t, n)]["err"] for t in range(90)) / 90
+        return now - base
+    up = {n: rise(n) for n in SHOWN if rise(n) > 0.05}
+    if not up:
+        return None
+    leaves = [n for n in up if not any(d in up for d in env.topo[n].deps)] or list(up)
+    return max(leaves, key=up.get)
+
+
+def root_accuracy(runs):
+    """Run-1 root cause: the agent vs the error-blame baseline, judged against the simulator's true roots."""
+    from .verify.trace import Truth
+    rows = []
+    for r in runs:
+        if r["run"] != 1:
+            continue
+        inc = next(i for i in AGENT_INCIDENTS if i.id == r["task"])
+        if inc.no_outage:
+            continue
+        roots = Truth(inc, Environment(inc)).roots
+        rows.append({"task": inc.id, "agent": r["verdict"]["extraction"]["roots"], "baseline": error_blame(inc),
+                     "agent_right": any(x in roots for x in r["verdict"]["extraction"]["roots"]),
+                     "baseline_right": error_blame(inc) in roots})
+    return {"tasks": len(rows), "agent_right": sum(x["agent_right"] for x in rows),
+            "baseline_right": sum(x["baseline_right"] for x in rows), "rows": rows}
+
+
 def stats(runs, packet_first):
     """Headline numbers for the investigation track. packet_first maps task -> packet-mode run-1 verdict."""
     first = [r for r in runs if r["run"] == 1]
@@ -97,6 +133,7 @@ def stats(runs, packet_first):
         "mean_steps": round(sum(r["trace"]["n_steps"] for r in runs) / max(1, len(runs)), 1),
         "probed_connectivity": sum("check_connectivity" in r["trace"]["tools_used"] for r in runs),
         "with_missed_checks": sum(bool(r["trace"]["missed_checks"]) for r in runs),
+        "root_cause_vs_baseline": {k: v for k, v in root_accuracy(runs).items() if k != "rows"},
         "packet_vs_agent_first_accept": {
             "packet": sum(packet_first[r["task"]] == "ACCEPT" for r in shared),
             "agent": sum(r["verdict"]["verdict"] == "ACCEPT" for r in shared), "tasks": len(shared)},
