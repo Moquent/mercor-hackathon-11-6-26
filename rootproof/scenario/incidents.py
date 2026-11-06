@@ -295,6 +295,64 @@ NET_INCIDENT_DATA = [
               "traffic just stops). Traffic falls through to korra (misses) and brio (60 req/s quota, 429s). Rolling back the firewall "
               "rule ends the incident; vela-origin needs no action and raising brio's quota does not fix it.",
     ),
+    dict(
+        id="18-dns-stale-record", title="NET: a DNS migration leaves session-api resolving meta-index to a dead record",
+        faults=[Fault("F1", "session-api", "link", 0.6, 115, kind="config", change="dns-migration", link="meta-index", mode="dns")],
+        events=[(90, "meta-index", "deploy", "v7.4.1 rolled out (100%): ranking model refresh"),
+                (115, "session-api", "config", "dns-migration: internal zone svc.larkwave moved to new resolver pool (CHG-2291)"),
+                (215, "session-api", "alert", "SearchFailures > 15%")],
+        logs={"session-api": "call meta-index failed: getaddrinfo ENOTFOUND meta-index.svc.larkwave (attempt 1/2, 2/2)",
+              "edge-gw": "upstream session-api returned 502",
+              "meta-index": None},
+        truth="The DNS migration at 14:01:55 left a stale record set: ~60% of session-api lookups of meta-index.svc.larkwave return "
+              "NXDOMAIN or a decommissioned address, so those calls fail before reaching meta-index. meta-index is healthy (its traffic "
+              "drops). The meta-index deploy at 14:01:30 is a red herring. Fixing the DNS record ends the incident; rolling back or "
+              "restarting meta-index does nothing.",
+    ),
+    dict(
+        id="19-tls-cert-expiry", title="NET: session-api's mTLS client certificate for docstore expires",
+        faults=[Fault("F1", "session-api", "link", 1.0, 120, kind="external", link="docstore", mode="tls")],
+        events=[(60, "docstore", "drill", "scheduled failover drill: primary ds-a -> ds-b, completed, all replicas in sync"),
+                (120, "session-api", "secret", "cert-manager: certificate session-api-docstore-client renewal failed (issuer unreachable)"),
+                (200, "session-api", "alert", "HighErrorRate firing (err% > 20 for 60s)")],
+        logs={"session-api": "docstore call failed: remote error: tls: bad certificate (x509: certificate has expired or is not yet valid)",
+              "edge-gw": "upstream session-api returned 502",
+              "docstore": None},
+        truth="session-api's mTLS client certificate for docstore expired at 14:02:00 after cert-manager failed to renew it, so every "
+              "session-api -> docstore handshake is rejected. docstore is healthy (only its sub-poller traffic remains). The failover "
+              "drill at 14:01:00 is a red herring. Renewing the certificate ends the incident; restarting or failing over docstore does nothing.",
+    ),
+    dict(
+        id="20-sidecar-latency", title="NET: a sidecar policy change adds latency on session-api -> player-core, calls time out",
+        faults=[Fault("F1", "session-api", "link", 1400, 110, kind="config", change="sidecar-config", link="player-core", mode="latency")],
+        events=[(85, "media-cache", "config", "cache TTL for track manifests 300s -> 240s"),
+                (110, "session-api", "config", "mesh sidecar config v41: added ext_authz filter on the player-core route (PR #5342)"),
+                (225, "session-api", "alert", "HighErrorRate firing (err% > 10 for 60s)")],
+        logs={"session-api": "call player-core failed: upstream request timeout after 1500ms (attempt 1/2, 2/2)",
+              "edge-gw": "upstream session-api returned 504",
+              "player-core": None,
+              "media-cache": None},
+        truth="Sidecar config v41 at 14:01:50 adds ~1.4 s to every session-api -> player-core call (an ext_authz filter waiting on a "
+              "slow authz service), pushing some calls past session-api's 1500 ms timeout; a retry often times out again, so ~13% of "
+              "requests fail. player-core and media-cache are healthy and fast. The media-cache TTL tweak at 14:01:25 is a red herring. "
+              "Rolling back the sidecar config ends the incident; rolling back or restarting media-cache or player-core does nothing.",
+    ),
+    dict(
+        id="21-packet-loss", title="NET: packet loss between media-cache and vela-origin; slow retransmits and fallback errors",
+        faults=[Fault("F1", "media-cache", "link", 0.4, 100, kind="external", link="vela-origin", mode="loss")],
+        events=[(70, "vela-origin", "vendor", "status page: 'elevated API latency in eu-west' (posted 13:20, resolved 13:55)"),
+                (100, "media-cache", "infra", "netmon: CRC errors rising on tor-sw-14 port 22 (media-cache rack r7 uplink)"),
+                (230, "media-cache", "alert", "OriginFallbackRate > 25%")],
+        logs={"media-cache": "origin vela-origin: connection reset by peer / TCP retransmit timeout, falling back",
+              "brio-origin": "HTTP 429 Too Many Requests (tenant quota 60 req/s)",
+              "korra-origin": "media URI unavailable for catalog id (not licensed in region)",
+              "player-core": "media-cache returned error, attempt n/4",
+              "session-api": "player-core call failed: upstream error (attempt 1/2, 2/2)"},
+        truth="A faulty switch port on media-cache's rack uplink drops ~40% of packets to vela-origin from 14:01:40: those fetches "
+              "reset and fall through to korra/brio, and the rest are slowed by retransmits. vela-origin is healthy. The vela status "
+              "page entry is a resolved, unrelated event. Fixing the network path ends the incident; restoring vela or "
+              "touching media-cache's config does nothing.",
+    ),
 ]
 
 NET_INCIDENTS = [Incident(**d) for d in NET_INCIDENT_DATA]

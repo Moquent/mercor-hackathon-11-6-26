@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .agent.run import AGENT_INCIDENTS, load
 from .agent.tools import Environment
-from .scenario.actions import ALL_ACTIONS
+from .scenario.actions import ALL_ACTIONS, catalog_for
 from .scenario.incidents import NET_INCIDENTS
 from .verify.replay import ground_truth
 from .verify.trace import verify_trace
@@ -65,7 +65,7 @@ def evaluate():
     def go(job):
         inc, r = job
         rec = load(inc.id, r)
-        v = verify(inc, rec.get("answer") or "", ALL_ACTIONS)
+        v = verify(inc, rec.get("answer") or "", catalog_for(inc.id))
         return {"task": inc.id, "run": r, "verdict": v.to_dict(), "trace": verify_trace(inc, rec),
                 "steps": rec["steps"], "answer": rec.get("answer"), "final_reasoning": rec.get("final_reasoning", []),
                 "model_reported": rec.get("model_reported"), "exchanges": len(rec["exchanges"])}
@@ -73,7 +73,7 @@ def evaluate():
     with ThreadPoolExecutor(8) as ex:
         runs = list(ex.map(go, jobs))
     with ThreadPoolExecutor(8) as ex:
-        truth = dict(zip([i.id for i in NET_INCIDENTS], ex.map(lambda i: ground_truth(i, ALL_ACTIONS), NET_INCIDENTS)))
+        truth = dict(zip([i.id for i in NET_INCIDENTS], ex.map(lambda i: ground_truth(i, catalog_for(i.id)), NET_INCIDENTS)))
     return runs, truth, selftest()
 
 

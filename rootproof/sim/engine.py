@@ -35,6 +35,17 @@ class Fault:
     kind: str = "transient"      # transient: cleared by restart | config: cleared by rollback | external: by restore
     change: str = ""             # change owner a rollback targets (deploy/job name)
     link: str = ""               # set: a network fault on the svc -> link connection; value = share of connections refused
+    mode: str = "refuse"         # link faults: refuse | dns | tls (value = failure share) | latency (value = added ms)
+                                 # | loss (value = packet-loss share: that share fails, survivors get +2000*value ms)
+
+
+def link_effect(mode, value):
+    """(share of calls that fail at the connection, ms added to calls that get through) for a link fault."""
+    if mode == "latency":
+        return 0.0, value
+    if mode == "loss":
+        return value, 2000.0 * value
+    return value, 0.0
 
 
 def _order(svcs, entry):
@@ -76,13 +87,17 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
                     restarted_at[op[1]] = t
                     backlog[op[1]] = 0.0
         svcs = {n: replace(s, deps=list(s.deps)) for n, s in topology.items()}
-        links = {}
+        links, link_ms = {}, {}
         for f in faults:
             if f.start <= t < f.end and f.id not in cleared:
                 if f.kind == "transient" and f.svc in restarted_at and t >= restarted_at[f.svc]:
                     continue
                 if f.link:
-                    links[(f.svc, f.link)] = f.value
+                    p_link, add_ms = link_effect(f.mode, f.value)
+                    if p_link or f.mode == "refuse":
+                        links[(f.svc, f.link)] = p_link
+                    if add_ms:
+                        link_ms[(f.svc, f.link)] = add_ms
                 else:
                     setattr(svcs[f.svc], f.field, f.value)
         if t >= PAGE_T:
@@ -98,7 +113,7 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
             carry = offered[n]
             for c in s.deps:
                 p_link = links.get((n, c), 0.0)
-                pf = _with_link(p_fail[c], p_link)
+                pf = _with_link(p_fail[c], _edge_fail(n, c, links, link_ms, lat, s.timeout_ms) if link_ms else p_link)
                 p = _retryable(pf, p_sticky[c])
                 attempts = sum(p ** k for k in range(s.retries + 1))
                 offered[c] += carry * attempts * (1 - p_link)
@@ -119,14 +134,16 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
             if s.mode == "fallback":
                 miss, child_ms = 1.0, 0.0
                 for c in s.deps:
-                    child_ms += miss * min(lat[c], s.timeout_ms)
-                    miss *= _fail_after_retries(_with_link(p_fail[c], links.get((n, c), 0.0)), p_sticky[c], s.retries)
+                    child_ms += miss * min(lat[c] + link_ms.get((n, c), 0.0), s.timeout_ms)
+                    miss *= _fail_after_retries(_with_link(p_fail[c], _edge_fail(n, c, links, link_ms, lat, s.timeout_ms)
+                                                           if link_ms else links.get((n, c), 0.0)), p_sticky[c], s.retries)
                 ok = (1 - s.err) * (1 - reject) * (1 - miss)
             else:
-                child_ms = sum(min(lat[c], s.timeout_ms) for c in s.deps)
+                child_ms = sum(min(lat[c] + link_ms.get((n, c), 0.0), s.timeout_ms) for c in s.deps)
                 ok = (1 - s.err) * (1 - reject)
                 for c in s.deps:
-                    ok *= 1 - _fail_after_retries(_with_link(p_fail[c], links.get((n, c), 0.0)), p_sticky[c], s.retries)
+                    p_e = _edge_fail(n, c, links, link_ms, lat, s.timeout_ms) if link_ms else links.get((n, c), 0.0)
+                    ok *= 1 - _fail_after_retries(_with_link(p_fail[c], p_e), p_sticky[c], s.retries)
             lat[n] = own_ms + wait_ms + child_ms
             p_self[n] = 1 - ok
         for n in order:
@@ -146,6 +163,16 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
             rows.append({"t": t, "svc": n, "rps": offered[n] * noise, "lat_ms": lat[n] * noise,
                          "err": p_self[n], "seen_fail": p_fail[n], "backlog": backlog[n]})
     return rows
+
+
+def _edge_fail(n, c, links, link_ms, lat, timeout_ms):
+    """Failure share added by the n -> c link: connection failures plus timeouts caused by latency added on the link."""
+    p_link, add = links.get((n, c), 0.0), link_ms.get((n, c), 0.0)
+    if not add:
+        return p_link
+    seen = lat[c] + add
+    p_to = min(1.0, (seen - timeout_ms) / (0.25 * timeout_ms)) if seen > timeout_ms else 0.0
+    return 1 - (1 - p_link) * (1 - p_to)
 
 
 def _with_link(p, p_link):

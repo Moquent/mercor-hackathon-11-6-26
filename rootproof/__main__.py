@@ -3,6 +3,7 @@
     python3 -m rootproof evaluate            re-verify every saved answer and rebuild results/ and docs/
     python3 -m rootproof ask                 freeze prompts and ask the subject AI for simulated incidents
     python3 -m rootproof investigate         the subject AI investigates every incident with tools, 3 runs, every step recorded
+    python3 -m rootproof serve [--host H] [--port P]  the live console (default http://127.0.0.1:8080/)
     python3 -m rootproof ask-rcaeval         ask the subject AI about the prepared RCAEval cases
     python3 -m rootproof prepare-rcaeval DIR build RCAEval packets from downloaded cases (needs pandas, pyarrow)
     python3 -m rootproof rcaeval-traces     per-edge call stats from the real RCAEval traces (needs pandas, pyarrow)
@@ -27,6 +28,10 @@ def main(argv):
     if cmd == "investigate":
         from .agent.run import investigate_all
         return investigate_all(runs=3)
+    if cmd == "serve":
+        from .live.server import serve
+        opts = dict(zip(rest[::2], rest[1::2]))
+        return serve(opts.get("--host", "127.0.0.1"), int(opts.get("--port", 8080)))
     if cmd == "ask-rcaeval":
         from .rcaeval.run import ask_all
         return ask_all()

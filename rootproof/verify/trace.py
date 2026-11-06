@@ -10,7 +10,7 @@ Missed checks: a faulty link never probed, a root never health-checked, a true-p
 each with the output that check would have shown.
 The first wrong step is the earliest step a non-verified claim rests on (or the final answer, when it cites nothing).
 """
-from ..agent.tools import HEALTH_ERR, Environment
+from ..agent.tools import HEALTH_ERR, PROBES, Environment
 from ..config import PAGE_T
 from .chain import failure_onset, true_graph
 from .claims import LOAD_SOURCES
@@ -21,7 +21,10 @@ ERROR_LEVEL = 0.05
 SLOW_RATIO = 2.0
 LOAD_RATIO = 1.5
 STATES = ("erroring", "slow", "overloaded", "healthy")
-EDGE_TYPES = ("failure", "load", "unreachable")
+EDGE_TYPES = ("failure", "load", "unreachable", "dns", "tls", "latency", "loss")
+LINK_MODES = ("dns", "tls", "latency", "loss")          # edge types that name a link-fault mode
+SIGNATURES = {"dns": ("enotfound", "nxdomain", "resolve"), "tls": ("x509", "certificate", "handshake"),
+              "latency": ("timeout", "timed out"), "loss": ("retransmit", "reset", "loss")}
 
 
 def _mean(env, svc, key, t0, t1):
@@ -40,7 +43,8 @@ class Truth:
         # the service whose deploy started a job that is a root counts as a root too ("session-api's post-deploy job")
         self.roots |= {svc for _, svc, _, msg in incident.events
                        for f in incident.faults if f.change in LOAD_SOURCES and f.change in msg}
-        self.links = {(f.svc, f.link) for f in incident.faults if f.link}
+        self.links = {(f.svc, f.link) for f in incident.faults if f.link and f.mode in ("refuse", "dns", "tls")}
+        self.link_modes = {(f.svc, f.link, f.mode) for f in incident.faults if f.link}
         self.onset = {n: failure_onset([r for r in _rows(env)], n) for n in env.topo}
 
     def state(self, svc):
@@ -59,6 +63,8 @@ class Truth:
         """Edges are true if the propagation graph has them, or if the physics at page time shows them directly."""
         if kind == "unreachable":
             return (src, dst) in self.links
+        if kind in LINK_MODES:
+            return (src, dst, kind) in self.link_modes
         if src in LOAD_SOURCES:
             return kind == "load" and (src, dst) in self.edges
         calls = dst in self.env.topo[src].deps
@@ -106,6 +112,8 @@ def _supported(claim, cited):
         if typ == "unreachable":
             return any(s["tool"] == "check_connectivity" and s["observed"].get("src") == src and s["observed"].get("dst") == dst
                        and (s["observed"].get("refused") or 0) > ERROR_LEVEL for s in cited) or any(_connect_log(s, src, dst) for s in cited)
+        if typ in LINK_MODES:
+            return any(_probe_shows(s, src, dst, typ) or _signature_log(s, src, dst, typ) for s in cited)
         if typ == "failure":
             if any(_shows_state(s["observed"], s["tool"], dst, "healthy") and s["tool"] == "check_health" for s in cited):
                 return False        # its own evidence says the callee is healthy
@@ -128,7 +136,24 @@ def _connect_log(step, src, dst):
     return step["observed"].get("service") == src and dst in msg and ("refused" in msg or "connect" in msg)
 
 
+def _probe_shows(step, src, dst, mode):
+    """A link probe on src -> dst whose observation shows a fault of this mode."""
+    obs = step["observed"]
+    return (step["tool"] == PROBES[mode] and obs.get("src") == src and obs.get("dst") == dst and obs.get("mode") == mode
+            and ((obs.get("failing") or 0) > ERROR_LEVEL or (obs.get("added_ms") or 0) > 0))
+
+
+def _signature_log(step, src, dst, mode):
+    """A log line from src that names dst and carries this mode's error signature."""
+    msg = (step["observed"].get("message") or "").lower() if step["tool"] == "get_logs" else ""
+    return step["observed"].get("service") == src and dst in msg and any(w in msg for w in SIGNATURES[mode])
+
+
 def _grounded(claim, steps):
+    if claim.get("kind") == "edge" and claim["type"] in LINK_MODES:
+        src, dst, typ = claim["src"], claim["dst"], claim["type"]
+        return any(s["tool"] == PROBES[typ] and _touches(s, src) and _touches(s, dst) or _signature_log(s, src, dst, typ)
+                   for s in steps)
     if claim.get("kind") == "edge":
         if claim["type"] == "unreachable":
             return any(s["tool"] == "check_connectivity" and _touches(s, claim["src"]) and _touches(s, claim["dst"])
@@ -173,10 +198,11 @@ def describe(claim):
 def missed_checks(incident, env, truth, steps):
     """True-path inspections the AI never made, each with the output it would have seen."""
     out = []
-    for src, dst in sorted(truth.links):
-        if not any(s["tool"] == "check_connectivity" and _touches(s, src) and _touches(s, dst) for s in steps):
-            out.append({"tool": "check_connectivity", "args": {"src": src, "dst": dst},
-                        "would_show": env.call("check_connectivity", {"src": src, "dst": dst})[0]})
+    for src, dst, mode in sorted(truth.link_modes):
+        tool = PROBES[mode]
+        if not any(s["tool"] == tool and _touches(s, src) and _touches(s, dst) for s in steps):
+            out.append({"tool": tool, "args": {"src": src, "dst": dst},
+                        "would_show": env.call(tool, {"src": src, "dst": dst})[0]})
     for svc in sorted(r for r in truth.roots if r in env.topo):
         if not any(s["tool"] == "check_health" and _touches(s, svc) for s in steps):
             out.append({"tool": "check_health", "args": {"service": svc},
@@ -186,6 +212,13 @@ def missed_checks(incident, env, truth, steps):
             out.append({"tool": "get_metrics", "args": {"service": svc},
                         "would_show": env.call("get_metrics", {"service": svc})[0].splitlines()[-1]})
     return out
+
+
+# Which kind of evidence decides each label. The simulator is a closed world: its truth covers every service and link,
+# so a claim it contradicts is FALSE, not merely unobserved (the open-world NOT_OBSERVED verdict applies to real traces).
+COVERAGE = {"closed_world": True, "source": "simulator state, every service and link, every second"}
+EVIDENCE_CLASS = {"FALSE": "simulator_truth", "UNGROUNDED": "agent_trace", "UNSUPPORTED": "agent_trace",
+                  "VERIFIED": "agent_trace+simulator_truth", "MALFORMED": "schema"}
 
 
 def verify_trace(incident, record):
@@ -206,7 +239,8 @@ def verify_trace(incident, record):
         label = "FALSE" if not tr else "UNGROUNDED" if not g else "UNSUPPORTED" if not sup else "VERIFIED"
         commit = min((index[e] for e in c.get("evidence", []) if e in index), default=None)
         results.append({"claim": c, "text": describe(c), "label": label, "grounded": g, "supported": sup, "true": tr,
-                        "evidence": [s["id"] for s in cited], "commit_step": None if commit is None else steps[commit]["id"]})
+                        "evidence": [s["id"] for s in cited], "commit_step": None if commit is None else steps[commit]["id"],
+                        "decided_by": EVIDENCE_CLASS[label]})
     missed = missed_checks(incident, env, truth, steps)
     bad = [r for r in results if r["label"] != "VERIFIED"]
     first_wrong = None
@@ -220,5 +254,5 @@ def verify_trace(incident, record):
     counts = {k: sum(r["label"] == k for r in results) for k in ("VERIFIED", "UNSUPPORTED", "UNGROUNDED", "FALSE", "MALFORMED")}
     return {"task": record["task"], "run": record["run"], "n_steps": len(steps),
             "tools_used": sorted({s["tool"] for s in steps}), "claims": results, "counts": counts,
-            "missed_checks": missed, "first_wrong": first_wrong,
+            "missed_checks": missed, "first_wrong": first_wrong, "coverage": COVERAGE,
             "clean": bool(results) and not bad}

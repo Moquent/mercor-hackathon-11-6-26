@@ -9,6 +9,29 @@ An AI on-call agent writes a confident root-cause analysis. RootProof checks it 
 
 Every rejection comes with a certificate: replay numbers, a timing contradiction, a retry-amplification ratio, an impossible edge, or a metric signature that contradicts the claimed fault.
 
+## Live console
+
+```bash
+python3 -m rootproof serve        # http://127.0.0.1:8080/
+```
+
+One screen that runs everything while you watch, streamed over Server-Sent Events:
+- **Topology:** the simulated system animates second by second, with request particles, error colouring and broken links. An agent cursor moves to whatever service or link the AI is inspecting.
+- **Agent stream:** every tool call with the AI's stated reason, the reasoning summary, the output, and the token count and latency of each exchange. You can replay a saved run (offline, free) or run the agent live (real API calls).
+- **Verification pipeline:** extraction, replay on five seeds (curves drawn as they finish), story checks, each claim's three checks, the checks it skipped, and the first wrong step.
+- **Benchmark:** re-verifies all saved investigations, filling a grid and live totals.
+- **Case composer:** describe an incident in plain words. The AI drafts it as a case, the server validates and simulates it, computes the ground truth, and the agent can investigate it. Drafted cases are saved in `cases/custom/`.
+- **Event log:** every event as JSON, filterable. The API and event schema are in `rootproof/live/EVENTS.md`.
+
+In Docker (isolated; the console binds to localhost only):
+
+```bash
+colima start                      # or Docker Desktop
+docker compose up console         # the console
+docker compose run --rm bench     # the full offline evaluation
+docker compose run --rm gate      # the regression gate
+```
+
 ## Run it
 
 Python 3.10 or newer. The core needs only the standard library.
@@ -50,6 +73,7 @@ rootproof/
   audit_extra.py     second hand audit of the extraction, on a seeded sample of runs 2-5
   investigation.py   evaluates the recorded investigations and self-tests the trace verifier
   agent/             the investigation tools (tools.py) and the recorded tool-calling loop (run.py)
+  live/              the console: server (stdlib HTTP + SSE), event bus, streamed jobs, case composer, assets/
   sim/               replay engine (engine.py), including network link faults
   scenario/          Larkwave topology, the 21-action catalogue, the 15 incidents (typed objects)
   verify/            extract (Jev), replay (decides), claims (explain), chain (causal graph), verdict, trace (claim vs steps)

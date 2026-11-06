@@ -49,4 +49,33 @@ NET_CATALOG = {
     "rollback_netpolicy": ("Roll back or revert the recent NetworkPolicy / firewall / egress or network rule change", [("rollback", "netpolicy")]),
 }
 NET_ACTIONS = {key: Action(key, description, tuple(ops)) for key, (description, ops) in NET_CATALOG.items()}
-ALL_ACTIONS = ACTIONS | NET_ACTIONS
+
+# Fixes for the link-mode incidents (18-21). Kept out of NET_CATALOG / iteration over ALL_ACTIONS on purpose: Jev is asked
+# one question per catalog entry, so adding them there would change the (cached) questions for every recorded answer.
+NET_EXTRA_CATALOG = {
+    "fix_dns_record":          ("Fix or revert the DNS record / DNS migration so meta-index resolves to the right address again "
+                                "(e.g. restore the old record, flush the stale entry)", [("rollback", "dns-migration")]),
+    "renew_tls_cert":          ("Renew, reissue or replace the expired mTLS client certificate that session-api presents to docstore",
+                                [("restore", "session-api")]),
+    "rollback_sidecar_config": ("Roll back or revert the session-api sidecar / service-mesh proxy configuration change "
+                                "(e.g. the added ext_authz filter on its player-core route)", [("rollback", "sidecar-config")]),
+    "fix_network_path":        ("Fix the network path between media-cache and vela-origin (drain or replace the faulty switch "
+                                "port / NIC, reroute the traffic)", [("restore", "media-cache")]),
+}
+NET_EXTRA_ACTIONS = {key: Action(key, description, tuple(ops)) for key, (description, ops) in NET_EXTRA_CATALOG.items()}
+
+
+class _Catalog(dict):
+    """A catalog whose lookups also find NET_EXTRA_ACTIONS (so replay can apply them) while iteration does not."""
+
+    def __missing__(self, key):
+        return NET_EXTRA_ACTIONS[key]
+
+
+ALL_ACTIONS = _Catalog(ACTIONS | NET_ACTIONS)
+NET_EXTRA_INCIDENTS = ("18-dns-stale-record", "19-tls-cert-expiry", "20-sidecar-latency", "21-packet-loss")
+
+
+def catalog_for(incident_id):
+    """The action catalog to ask Jev about for one incident: the link-mode incidents also get NET_EXTRA_ACTIONS."""
+    return ALL_ACTIONS | NET_EXTRA_ACTIONS if incident_id in NET_EXTRA_INCIDENTS else ALL_ACTIONS
