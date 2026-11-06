@@ -1,15 +1,12 @@
-"""Seeded fluid-queue simulator of a service DAG, with fault injection and counterfactual replay.
+"""Seeded fluid-queue simulator of a service graph, with fault injection and counterfactual replay.
 
 Each tick (1 s) computes offered load top-down (retries and fallbacks multiply it), then queueing, latency and
-failure bottom-up. Failure seen by a caller = the callee's own errors, or latency past the caller's timeout.
+failure bottom-up. A caller sees a failure when the callee's own errors occur or its latency passes the caller's timeout.
 """
 import random
 from dataclasses import dataclass, field, replace
 
-T = 600
-PAGE_T = 300                 # the on-call is paged here; interventions apply from here
-JUDGE = (450, 600)           # SLO judged on this window of the replay
-SLO_OK = 0.05                # incident is resolved if the entry error rate stays below this
+from ..config import JUDGE_WINDOW, PAGE_T, SIM_T, SLO_ERROR_RATE
 
 
 @dataclass
@@ -55,7 +52,7 @@ def _order(svcs, entry):
     return out
 
 
-def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=T):
+def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
     """actions: list of ops applied from PAGE_T on:
        ("set", svc, field, value) | ("scale", svc, k) | ("restart", svc) | ("rollback", change) | ("restore", svc)"""
     rng = random.Random(seed)
@@ -161,4 +158,4 @@ def error_rate(rows, svc, t0, t1):
 
 
 def resolved(rows, entry):
-    return error_rate(rows, entry, *JUDGE) < SLO_OK
+    return error_rate(rows, entry, *JUDGE_WINDOW) < SLO_ERROR_RATE

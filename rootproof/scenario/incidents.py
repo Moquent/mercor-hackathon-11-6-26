@@ -1,69 +1,30 @@
-"""Larkwave: a fictional music-streaming platform. One shared topology, eight incidents, one action catalog.
+"""The fifteen incidents. Each is data: injected faults, the change/event log, the logs the on-call sees, and the
+computed-truth note used by the ground truth document.
 
-Every name here is invented. Incidents are patterns common to streaming backends (provider outage with fallback
-load shift, metastable retry storms, poller load, rate-limit storms, credential expiry, bad deploys).
+Tasks 01-11 are the original traps and controls. 12-13 test the "fixes the trigger, misses the loop" hypothesis.
+14-15 are multi-fault cases.
 """
-from sim import Fault, Svc
+from dataclasses import dataclass, field
 
-ENTRY = "edge-gw"
-
-
-def topology():
-    return {
-        "edge-gw":       Svc("edge-gw", 5000, 5, ["session-api"], timeout_ms=3000),
-        "session-api":   Svc("session-api", 3000, 10, ["docstore", "meta-index", "notify-relay", "player-core"],
-                             timeout_ms=1500, retries=1),
-        "docstore":      Svc("docstore", 1500, 4, extra_rps=100),
-        "meta-index":    Svc("meta-index", 2000, 30),
-        "notify-relay":  Svc("notify-relay", 1000, 20, queue=False),
-        "player-core":   Svc("player-core", 1500, 20, ["media-cache"], timeout_ms=1200, retries=3),
-        "media-cache":   Svc("media-cache", 450, 60, ["vela-origin", "korra-origin", "brio-origin"],
-                             mode="fallback", timeout_ms=800, sticky=True),
-        "vela-origin":   Svc("vela-origin", 2000, 50),
-        "korra-origin":  Svc("korra-origin", 600, 150, err=0.4),
-        "brio-origin":   Svc("brio-origin", 60, 200, err=0.25, queue=False),
-        "clip-preview":  Svc("clip-preview", 400, 90, ["clipstream-origin"], timeout_ms=2000, extra_rps=40),
-        "clipstream-origin": Svc("clipstream-origin", 400, 300, err=0.03),
-    }
+from ..sim import Fault
+from .topology import topology
 
 
-DEPS_TEXT = """edge-gw      -> session-api                                   timeout 3000ms, retries 0
-session-api  -> docstore, meta-index, notify-relay, player-core  timeout 1500ms, retries 1 (all four required per request)
-player-core  -> media-cache                                   timeout 1200ms, retries 3
-media-cache  -> vela-origin, then korra-origin, then brio-origin (fallback chain on miss/error), timeout 800ms
-clip-preview -> clipstream-origin  (background preview generator, not on the listener request path)
-docstore also serves the sub-poller cron (subscription sync)
-notify-relay forwards to the external Chatline API (global quota: 1000 req/s, excess -> 429)"""
+@dataclass
+class Incident:
+    id: str
+    title: str
+    faults: list
+    events: list
+    logs: dict
+    truth: str
+    no_outage: bool = False
+    clip_noise: float = 0.0
+    sticky: list = field(default_factory=list)
+    extra: str = ""
 
-# Action catalog: what the subject AI's recommendation can be compiled into.
-# Jev answers one yes/no question per entry ("does the recommendation include ...?"); selected ops are replayed.
-ACTIONS = {
-    "restart_media_cache":   ("Restart, redeploy, reschedule or replace media-cache pods, or bring media-cache back to its full healthy pod count (e.g. fix/add nodes so evicted pods can schedule)", [("restart", "media-cache")]),
-    "scale_media_cache_2x":  ("Add media-cache replicas/capacity BEYOND its normal size, by about 2x or an unspecified amount (not just restoring missing pods)", [("scale", "media-cache", 2)]),
-    "scale_media_cache_4x":  ("Add media-cache capacity to 4x or more of its normal size", [("scale", "media-cache", 4)]),
-    "rollback_media_cache":  ("Roll back or revert the recent media-cache configuration change (CPU limit, cache TTL, connection pool, etc.)", [("rollback", "media-cache-config")]),
-    "player_retries_off":    ("Set the player-core -> media-cache retries to 0 (disable them)", [("set", "player-core", "retries", 0)]),
-    "player_retries_1":      ("Reduce the player-core -> media-cache retries to 1 or 2 (not zero)", [("set", "player-core", "retries", 1)]),
-    "session_retries_off":   ("Set session-api retries to 0 (disable them)", [("set", "session-api", "retries", 0)]),
-    "restore_vela":          ("Restore vela-origin access (fix billing/account/credentials with the vela provider)", [("restore", "vela-origin")]),
-    "scale_brio":            ("Raise the brio-origin rate limit or add brio capacity", [("scale", "brio-origin", 10)]),
-    "restart_docstore":      ("Restart or fail over docstore", [("restart", "docstore")]),
-    "scale_docstore_2x":     ("Scale docstore up (about 2x, or an unspecified amount)", [("scale", "docstore", 2)]),
-    "rollback_sub_poller":   ("Roll back or pause the sub-poller change / cron", [("rollback", "sub-poller")]),
-    "stop_msg_cleanup":      ("Pause, stop or throttle the msg-cleanup job", [("rollback", "msg-cleanup")]),
-    "rollback_session_api":  ("Roll back the session-api deploy", [("rollback", "session-api-deploy")]),
-    "rollback_notify_relay": ("Roll back the notify-relay deploy", [("rollback", "notify-relay-deploy")]),
-    "fix_clipstream":        ("Restart, disable or fix clip-preview / clipstream-origin", [("restart", "clipstream-origin")]),
-    "rotate_meta_creds":     ("Rotate or restore the meta-index API credentials", [("restore", "meta-index")]),
-    "rollback_meta_index":   ("Roll back the meta-index deploy", [("rollback", "meta-index-deploy")]),
-    "rollback_player_core_config": ("Set the player-core -> media-cache timeout back to its previous value (1200ms), i.e. revert the player-core timeout change", [("rollback", "player-core-config")]),
-    "restart_session_api":   ("Restart or roll-restart session-api pods", [("restart", "session-api")]),
-    "request_chatline_quota": ("Ask Chatline for a higher API quota (external, not actionable now)", []),
-}
 
-# Each incident: faults (ground truth mechanism), a change/event log, alerts and log templates for the packet.
-# "minute" offsets are seconds of sim time; packet clock starts at 14:00:00.
-INCIDENTS = [
+INCIDENT_DATA = [
     dict(
         id="01-vela-402", title="Primary origin billing lapse -> fallback flood",
         faults=[Fault("F1", "vela-origin", "err", 1.0, 110, kind="external")],
@@ -289,19 +250,15 @@ INCIDENTS = [
     ),
 ]
 
-# Services the subject AI can blame (Jev choice) - the visible components.
-SERVICES = ["edge-gw", "session-api", "docstore", "meta-index", "notify-relay", "player-core", "media-cache",
-            "vela-origin", "korra-origin", "brio-origin", "clip-preview", "clipstream-origin", "sub-poller", "msg-cleanup"]
+
+INCIDENTS = [Incident(**d) for d in INCIDENT_DATA]
 
 
-def faults_for(inc):
-    return inc["faults"]
-
-
-def topo_for(inc):
-    t = topology()
-    if inc.get("clip_noise"):
-        t["clipstream-origin"].err = inc["clip_noise"]
-    for svc in inc.get("sticky", []):
-        t[svc].sticky = True
-    return t
+def topology_for(incident):
+    """The shared topology with this incident's per-run overrides applied."""
+    topo = topology()
+    if incident.clip_noise:
+        topo["clipstream-origin"].err = incident.clip_noise
+    for svc in incident.sticky:
+        topo[svc].sticky = True
+    return topo

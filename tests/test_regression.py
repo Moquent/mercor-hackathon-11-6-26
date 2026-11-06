@@ -20,7 +20,7 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN = os.path.join(REPO, "tests", "golden")
-DEFAULT_CMD = f"{shlex.quote(sys.executable)} rootproof/evaluate.py"
+DEFAULT_CMD = f"{shlex.quote(sys.executable)} -m rootproof evaluate"
 SKIP = shutil.ignore_patterns(".env", "data", "__pycache__", "*.zip", ".git", "*.pdf")
 
 
