@@ -57,3 +57,15 @@ Always:
 - `log` `{level: "info"|"warn"|"error", msg}`
 - `error` `{msg}`
 - `done` `{}`
+
+## Recorded event graphs
+
+The console links to `/dag.html`. `GET /api/dag/runs`, `/api/dag/run/<id>`, `/api/dag/tasks`,
+`/api/dag/task/<id>` and `/api/dag/results` provide the captured graphs and benchmark results.
+`POST /api/dag/verify` checks event relationships, with incomplete coverage reported as `NOT_OBSERVED`.
+`POST /api/dag/ask` starts a new model request; `/api/dag/run-live` runs an instrumented scenario when the
+optional real-system profile is available, or reports that it is using a captured run. Both return a job id
+and use the same SSE endpoint. A forced closed-world selection is a user assumption, not proof of completeness.
+
+In the simulated replay track, `ACCEPT` uses seed 0 and the story checks. `fixed_by_seed` is reported separately;
+all five values must be true for the fix to be called robust. Replay evidence is a simulated intervention.

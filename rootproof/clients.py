@@ -21,6 +21,10 @@ def _load_env(path=os.path.join(ROOT, ".env")):
                 if "=" in line and not line.lstrip().startswith("#"):
                     k, v = line.split("=", 1)
                     env[k.strip()] = v.strip().strip('"').strip("'")
+    # Compose injects env_file values into the container environment; it does not copy .env into the image.
+    for name in ("OPENAI", "TYPESAFE"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
     return env
 
 

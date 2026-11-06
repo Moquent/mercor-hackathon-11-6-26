@@ -37,7 +37,15 @@ def find(task_id):
 
 def save(case):
     os.makedirs(CUSTOM_DIR, exist_ok=True)
-    case["id"] = re.sub(r"[^a-z0-9-]", "-", case["id"].lower())[:48]
-    with open(os.path.join(CUSTOM_DIR, case["id"] + ".json"), "w") as f:
-        json.dump(case, f, indent=1)
+    base = re.sub(r"[^a-z0-9-]", "-", case["id"].lower())[:48]
+    for number in range(10000):
+        case["id"] = base if number == 0 else f"{base[:43]}-{number}"
+        try:
+            with open(os.path.join(CUSTOM_DIR, case["id"] + ".json"), "x") as f:
+                json.dump(case, f, indent=1)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(f"no unused case id for {base}")
     return find(case["id"])

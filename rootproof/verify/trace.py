@@ -21,6 +21,7 @@ ERROR_LEVEL = 0.05
 SLOW_RATIO = 2.0
 LOAD_RATIO = 1.5
 STATES = ("erroring", "slow", "overloaded", "healthy")
+NO_CAUSE = {"none", "no root cause", "no cause", "no outage", "unconfirmed", "undetermined"}
 EDGE_TYPES = ("failure", "load", "unreachable", "dns", "tls", "latency", "loss")
 LINK_MODES = ("dns", "tls", "latency", "loss")          # edge types that name a link-fault mode
 SIGNATURES = {"dns": ("enotfound", "nxdomain", "resolve"), "tls": ("x509", "certificate", "handshake"),
@@ -109,6 +110,8 @@ def _supported(claim, cited):
         return any(_shows_state(s["observed"], s["tool"], claim["service"], claim["state"]) for s in cited)
     if kind == "edge":
         src, dst, typ = claim["src"], claim["dst"], claim["type"]
+        if src in LOAD_SOURCES and not _job_seen(src, cited):
+            return False
         if typ == "unreachable":
             return any(s["tool"] == "check_connectivity" and s["observed"].get("src") == src and s["observed"].get("dst") == dst
                        and (s["observed"].get("refused") or 0) > ERROR_LEVEL for s in cited) or any(_connect_log(s, src, dst) for s in cited)
@@ -123,11 +126,17 @@ def _supported(claim, cited):
         return any(_shows_state(s["observed"], s["tool"], dst, "overloaded") for s in cited)
     if kind == "cause":
         svc = claim["service"]
-        if svc not in Environment.KNOWN:      # "no single root cause": nothing specific to show
+        if svc.strip().lower() in NO_CAUSE:  # an explicit absence of a diagnosed root
             return bool(cited)
         return any(_touches(s, svc) and not _shows_state(s["observed"], s["tool"], svc, "healthy") for s in cited) or any(
             s["tool"] == "get_changes" and any(e[1] == svc for e in s["observed"]["events"]) for s in cited)
     return False
+
+
+def _job_seen(job, steps):
+    """Jobs have no direct health/metrics tool; a change record can still identify them."""
+    return any(s["tool"] == "get_changes" and any(e[1] == job for e in s["observed"].get("events", []))
+               for s in steps)
 
 
 def _connect_log(step, src, dst):
@@ -150,6 +159,9 @@ def _signature_log(step, src, dst, mode):
 
 
 def _grounded(claim, steps):
+    job = claim.get("src") if claim.get("kind") == "edge" else claim.get("service")
+    if job in LOAD_SOURCES:
+        return _job_seen(job, steps)
     if claim.get("kind") == "edge" and claim["type"] in LINK_MODES:
         src, dst, typ = claim["src"], claim["dst"], claim["type"]
         return any(s["tool"] == PROBES[typ] and _touches(s, src) and _touches(s, dst) or _signature_log(s, src, dst, typ)
@@ -160,7 +172,7 @@ def _grounded(claim, steps):
                        or _connect_log(s, claim["src"], claim["dst"]) for s in steps)
         return any(_touches(s, claim["dst"]) for s in steps)
     svc = claim.get("service")
-    if claim.get("kind") == "cause" and svc not in Environment.KNOWN:
+    if claim.get("kind") == "cause" and svc.strip().lower() in NO_CAUSE:
         return bool(steps)
     return any(_touches(s, svc) for s in steps) or claim.get("kind") == "cause" and any(
         s["tool"] == "get_changes" and any(e[1] == svc for e in s["observed"]["events"]) for s in steps)
@@ -173,7 +185,7 @@ def _true(claim, truth):
     if kind == "edge":
         return truth.edge(claim["src"], claim["dst"], claim["type"])
     if truth.no_outage:     # nothing is broken: only "no root cause" is true
-        return claim.get("service") not in truth.env.topo and claim.get("service") not in LOAD_SOURCES
+        return claim.get("service", "").strip().lower() in NO_CAUSE
     return claim.get("service") in truth.roots
 
 
@@ -217,7 +229,7 @@ def missed_checks(incident, env, truth, steps):
 # Which kind of evidence decides each label. The simulator is a closed world: its truth covers every service and link,
 # so a claim it contradicts is FALSE, not merely unobserved (the open-world NOT_OBSERVED verdict applies to real traces).
 COVERAGE = {"closed_world": True, "source": "simulator state, every service and link, every second"}
-EVIDENCE_CLASS = {"FALSE": "simulator_truth", "UNGROUNDED": "agent_trace", "UNSUPPORTED": "agent_trace",
+EVIDENCE_CLASS = {"FALSE": "simulator_truth", "UNGROUNDED": "agent_trace", "NOT_OBSERVED": "agent_trace_coverage", "UNSUPPORTED": "agent_trace",
                   "VERIFIED": "agent_trace+simulator_truth", "MALFORMED": "schema"}
 
 
@@ -236,7 +248,9 @@ def verify_trace(incident, record):
             continue
         cited = [steps[index[e]] for e in c.get("evidence", []) if e in index]
         g, sup, tr = _grounded(c, steps), _supported(c, cited), _true(c, truth)
-        label = "FALSE" if not tr else "UNGROUNDED" if not g else "UNSUPPORTED" if not sup else "VERIFIED"
+        job = c.get("src") if c.get("kind") == "edge" else c.get("service")
+        label = ("FALSE" if not tr else "NOT_OBSERVED" if not g and job in LOAD_SOURCES else
+                 "UNGROUNDED" if not g else "UNSUPPORTED" if not sup else "VERIFIED")
         commit = min((index[e] for e in c.get("evidence", []) if e in index), default=None)
         results.append({"claim": c, "text": describe(c), "label": label, "grounded": g, "supported": sup, "true": tr,
                         "evidence": [s["id"] for s in cited], "commit_step": None if commit is None else steps[commit]["id"],
@@ -251,7 +265,7 @@ def verify_trace(incident, record):
                       or worst["claim"].get("service") in m["args"].values()), None)
         first_wrong = {"step": worst["commit_step"] or "final answer", "claim": worst["text"], "label": worst["label"],
                        "would_have_caught_it": catch}
-    counts = {k: sum(r["label"] == k for r in results) for k in ("VERIFIED", "UNSUPPORTED", "UNGROUNDED", "FALSE", "MALFORMED")}
+    counts = {k: sum(r["label"] == k for r in results) for k in ("VERIFIED", "UNSUPPORTED", "UNGROUNDED", "NOT_OBSERVED", "FALSE", "MALFORMED")}
     return {"task": record["task"], "run": record["run"], "n_steps": len(steps),
             "tools_used": sorted({s["tool"] for s in steps}), "claims": results, "counts": counts,
             "missed_checks": missed, "first_wrong": first_wrong, "coverage": COVERAGE,

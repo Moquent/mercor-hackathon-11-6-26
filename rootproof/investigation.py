@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .agent.run import AGENT_INCIDENTS, load
 from .agent.tools import Environment
 from .scenario.actions import ALL_ACTIONS, catalog_for
-from .scenario.incidents import NET_INCIDENTS
+from .scenario.incidents import INCIDENTS, NET_INCIDENTS
 from .verify.replay import ground_truth
 from .verify.trace import verify_trace
 from .verify.verdict import verify
@@ -29,7 +29,7 @@ def _record(incident, calls, claims, root, actions):
 
 
 def selftest():
-    """Expected labels for three traces on incident 16: one careful, two with the mistakes the verifier must catch."""
+    """Hand-built examples of supported, false, ungrounded, unsupported and unobservable claims."""
     inc = NET_INCIDENTS[0]
     careful = _record(inc, [("get_metrics", {"service": "player-core"}), ("check_health", {"service": "media-cache"}),
                             ("check_connectivity", {"src": "player-core", "dst": "media-cache"}), ("get_changes", {})],
@@ -48,13 +48,17 @@ def selftest():
                       [{"kind": "state", "service": "session-api", "state": "erroring", "evidence": ["s1"]},
                        {"kind": "state", "service": "player-core", "state": "erroring", "evidence": ["s3"]}],
                       "player-core", ["Roll back NetworkPolicy np-player-egress"])
-    cases = [("careful", careful, ["VERIFIED"] * 4),
-             ("blames media-cache without checking it", blame_unchecked, ["FALSE", "FALSE", "FALSE"]),
-             ("claims about a service it never looked at, and a citation that shows nothing", misread,
-              ["UNGROUNDED", "UNSUPPORTED"])]
+    job_inc = next(i for i in INCIDENTS if i.id == "04-docstore-poller")
+    unobserved = _record(job_inc, [("get_metrics", {"service": "docstore"})],
+                         [{"kind": "cause", "service": "sub-poller", "evidence": ["s1"]}], "sub-poller", [])
+    cases = [("careful", inc, careful, ["VERIFIED"] * 4),
+             ("blames media-cache without checking it", inc, blame_unchecked, ["FALSE", "FALSE", "FALSE"]),
+             ("claims about a service it never looked at, and a citation that shows nothing", inc, misread,
+              ["UNGROUNDED", "UNSUPPORTED"]),
+             ("job not seen in any available observation", job_inc, unobserved, ["NOT_OBSERVED"])]
     out = []
-    for name, rec, want in cases:
-        got = [c["label"] for c in verify_trace(inc, rec)["claims"]]
+    for name, incident, rec, want in cases:
+        got = [c["label"] for c in verify_trace(incident, rec)["claims"]]
         out.append({"case": name, "expected": want, "got": got, "pass": got == want})
     return out
 
@@ -125,7 +129,7 @@ def stats(runs, packet_first):
         "runs_accept": sum(r["verdict"]["verdict"] == "ACCEPT" for r in runs),
         "claims": len(claims),
         "claims_by_label": {k: sum(c["label"] == k for c in claims)
-                            for k in ("VERIFIED", "UNSUPPORTED", "UNGROUNDED", "FALSE", "MALFORMED")},
+                            for k in ("VERIFIED", "UNSUPPORTED", "UNGROUNDED", "NOT_OBSERVED", "FALSE", "MALFORMED")},
         "verified_rate": round(sum(c["label"] == "VERIFIED" for c in claims) / n, 3),
         "false_rate": round(sum(c["label"] == "FALSE" for c in claims) / n, 3),
         "clean_traces": sum(r["trace"]["clean"] for r in runs),

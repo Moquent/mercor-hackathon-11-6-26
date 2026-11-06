@@ -1,0 +1,4233 @@
+{
+ "task": "x-stale-meta-index-dns",
+ "run": 0,
+ "model_requested": "gpt-6-luna",
+ "started_at_utc": "2026-11-06T20:44:51.997198+00:00",
+ "prompt": "You are the on-call SRE for Larkwave, a music streaming service. You were paged at 14:05:00: listeners are seeing errors.\nInvestigate with the tools (each call needs a one-sentence reason), find the root cause, and say exactly what the on-call\nshould do right now to restore service. If more than one action is needed, list every one, with exact values.\nEvery tool result starts with a step id like [s3]. Only claim what you have checked; cite the step ids that show it.\n\nEnd your answer with a JSON block exactly like:\n```json\n{\"root_cause_service\": \"...\", \"mechanism\": \"...\", \"actions\": [\"...\", \"...\"],\n  \"claims\": [\n    {\"kind\": \"state\", \"service\": \"<service>\", \"state\": \"erroring|slow|overloaded|healthy\", \"evidence\": [\"s1\"]},\n    {\"kind\": \"edge\", \"src\": \"<caller>\", \"dst\": \"<callee>\", \"type\": \"failure|load|unreachable|dns|tls|latency|loss\", \"evidence\": [\"s2\"]},\n    {\"kind\": \"cause\", \"service\": \"<root cause service>\", \"evidence\": [\"s3\", \"s4\"]}\n  ]}\n```\nA state claim says what a service is doing; an edge claim says how one service's problem reaches its caller\n(\"failure\": the callee's errors or slowness, \"load\": the caller's extra traffic overloads the callee, \"unreachable\": the\ncaller cannot connect although the callee may be fine, \"dns\": name resolution fails, \"tls\": the handshake or certificate\nfails, \"latency\": the link itself adds delay and calls time out, \"loss\": packet loss, resets and retransmits). Include one claim for every service and link your diagnosis relies on.",
+ "tools": [
+  {
+   "type": "function",
+   "name": "list_services",
+   "description": "List every Larkwave service you can inspect.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_dependencies",
+   "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_metrics",
+   "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_logs",
+   "description": "Error log line count and a sample message for a service since 14:00:00.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "check_health",
+   "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "check_connectivity",
+   "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_changes",
+   "description": "The change / deploy / alert log up to the page, newest last.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "resolve_dns",
+   "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "check_tls",
+   "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_proxy_stats",
+   "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  }
+ ],
+ "max_tool_calls": 20,
+ "exchanges": [
+  {
+   "sent_at_utc": "2026-11-06T20:44:51.997203+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "input": "You are the on-call SRE for Larkwave, a music streaming service. You were paged at 14:05:00: listeners are seeing errors.\nInvestigate with the tools (each call needs a one-sentence reason), find the root cause, and say exactly what the on-call\nshould do right now to restore service. If more than one action is needed, list every one, with exact values.\nEvery tool result starts with a step id like [s3]. Only claim what you have checked; cite the step ids that show it.\n\nEnd your answer with a JSON block exactly like:\n```json\n{\"root_cause_service\": \"...\", \"mechanism\": \"...\", \"actions\": [\"...\", \"...\"],\n  \"claims\": [\n    {\"kind\": \"state\", \"service\": \"<service>\", \"state\": \"erroring|slow|overloaded|healthy\", \"evidence\": [\"s1\"]},\n    {\"kind\": \"edge\", \"src\": \"<caller>\", \"dst\": \"<callee>\", \"type\": \"failure|load|unreachable|dns|tls|latency|loss\", \"evidence\": [\"s2\"]},\n    {\"kind\": \"cause\", \"service\": \"<root cause service>\", \"evidence\": [\"s3\", \"s4\"]}\n  ]}\n```\nA state claim says what a service is doing; an edge claim says how one service's problem reaches its caller\n(\"failure\": the callee's errors or slowness, \"load\": the caller's extra traffic overloads the callee, \"unreachable\": the\ncaller cannot connect although the callee may be fine, \"dns\": name resolution fails, \"tls\": the handshake or certificate\nfails, \"latency\": the link itself adds delay and calls time out, \"loss\": packet loss, resets and retransmits). Include one claim for every service and link your diagnosis relies on.",
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "resolve_dns",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_tls",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_proxy_stats",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_067ae0b7d3572ab1006aee3c442b9c87d29d483f422776333d",
+    "object": "response",
+    "created_at": 1793997892,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793997894,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_067ae0b7d3572ab1006aee3c44ee5487d2825d37a08ec4745c",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7jxGz2Y9fi1aBUUzyfPhVRyi-XVts-df3LyyXCqQuAEIyvYI2QMzfO4CkTnkXEIG8gEu9gIoczBS64Kn8CbvJ-0OhVFEnpTEOyVuxVm2PpaKEzEMM-tV3jcAMkamfeG9xOl-pZyfhkWE9ZV8lRNjX3Vr9yWo1MmsUKy02ZbTgl-hSbCppdgc_l_S7idUe8C5phqhvp4xsFFdD1DKjPM4k31I7pwtcGkvRKsX4U7jbbzR8lwzCs-cZfthOANh5wagxQerOFrgXFyyHGUWqMybeQDNHVATrc6ia7nyRGOuTYGnuJGgqjA0OLTDtCde22MO8BGUt9PMttDxfLwt1MrA9xS_ezdP7Q9FYpO2rkRMKohc5FYH60FtQQPXacEHwz2X7DJlAwek6ZCeDARIFAqAvYpPBNfCS-tpdpqr33QHZztifEMZqF1J9EiKGDONGkQ9_EdqnZt9lBnonygPkHDgqlXD8B7xjn_Gn2b6XDivRkUuCm_6Oz2Hk9IjJZM4e9JmVESOI8ZLCNhaLWt4akZae4ee5kwkqJJ1VetYYYXIiGU-6f54OZNuzvvZLohdj4fdYYkvRFj2YLR-19vUw9cTYdxYwI8ny7PlClvA1QTl4tjcn2DwiNk2BBZ1CqShQDiCt7BP_kwtM4DKjyJXWcvo7pOpm6BADT2ZGprFOWyRDPtn6Z5aq3pwpVyImwhFc73m6dw1HETjbrLiaM-fp6ozKwacdQXTKLOGfwlxjBlncxAPrf_aWPrYiYmMbs4ig-hseyRbxB_4qpYsiHwtaJPHnLbcHOA1p73PFRpilc8YS0BvS4i_oXxGRO4-4ccRza_C8lNC4wUaMp9LNZeEpYvlQ2jDhel78FE1dWJva9WcrK8E1Qa_n8Jub1m9iVAXIsaszXJn9Wd-9ADSs15joy7bVBTmLuvyzX1y1oF8UPN9lbdX9Qa4tiCmhZFFHNKtDhkUN7IM3xAhQW7tz5sq585YgRdRUDul6JiKTVuUj0-Jmnw7O1YbJMm-ChlRuhthYss-d_m9gKph9e3BtSOBtwgktb1vJYLA1FZ681D29Q8JOq3WRETw403EWVS4LVNbMCpQXuFXJVVw73Q88cvoHBGpGPuYpNE0HdA6-v_pcClfJRJMmggbeCKSRJOl32xBdIt9_AwZLzXgKuUkoHWUhSEaA3UrBjWaPc4ucHDpJrP4tn3enm4UTx-8NV85HUI6hSmnAlKcsQQo6F4lDWstyiGA11iNLQGIZPgZ4rdNyGT_7-bUaFAUA3zzY5E4i0Gn1sCOlRzXdakMgPMe8tS1UFA_AwMuQpRNl4keR1DoTSr6KYX_KULsG0r5ANClzFFE_whQ6LBgNZhEDGfUAovuhGkiUtI6454pc3QvthjvFbm6mv6fyRlOjq4Xfz8FPrlXUsvsRLgpwI_KgNLrgLfytMwv_ukZxCWsdG3La9ntv38FJg6YXZNTI0w9aM7U25iBwcC2bNun54U0EtIj0NE-VBbg18H2In0p_aV9H6TUuz5vzR7vm3vQhmnDJMU-4IdV1PcZrgLro4CSWtguyXidg0KsV-UYGPYYfTCE64G6-cvrsn-wklIt3C1jzcjLqVqWDo-6GG-0XYG_lO6dH_eCwI0Tftus0m3VgWwdqTG9XZ17RD4v2p7L0FijNtltIkuV6xZwX-35etgVDOreCYVQLm9ppWI2YCDENzs35P-faKSc-ndddlRLfTmo7-KXroemTN46WTYfpHExVlA2Cnp6vF5SRkexGQG7dwnlqXLjBlA4Ji_Z9dUJ3LzReR4WesNEksTnNg-LMu07J3kwcCjHHbwcLFx8CA==",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Inspecting changes and services**\n\nI think we need to inspect things closely. I should start by making a list of the services and changes involved, and it could be helpful to do this in parallel. That way, I can keep track of everything efficiently. It\u2019s essential to ensure I don\u2019t overlook any details, so getting everything organized is crucial. Let\u2019s see how best to approach this to keep it simple and clear for effective evaluation!"
+       }
+      ]
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4639a887d28ece05d8d2f77636",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"reason\":\"Identify the Larkwave services available for investigating the listener error page.\"}",
+      "call_id": "call_AH5WgEwYDK9kmtEwK0uWPBlK",
+      "name": "list_services"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "name": "resolve_dns",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "name": "check_tls",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "name": "get_proxy_stats",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 987,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 49,
+     "output_tokens_details": {
+      "reasoning_tokens": 16
+     },
+     "total_tokens": 1036
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T20:44:55.015603+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c442b9c87d29d483f422776333d",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_AH5WgEwYDK9kmtEwK0uWPBlK",
+      "output": "[s1] edge-gw\nsession-api\ndocstore\nmeta-index\nnotify-relay\nplayer-core\nmedia-cache\nvela-origin\nkorra-origin\nbrio-origin\nclip-preview\nclipstream-origin"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "resolve_dns",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_tls",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_proxy_stats",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_067ae0b7d3572ab1006aee3c47245487d2b2b9fbca81275d6d",
+    "object": "response",
+    "created_at": 1793997895,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793997897,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c48ba8087d2b608d3035b261662",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"reason\":\"Check recent deploys, changes, and alerts that could explain the incident.\"}",
+      "call_id": "call_cQmFqGWJadBv4z22UOMSFDMD",
+      "name": "get_changes"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c48ba9487d28b46856dd4942b8f",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Check the listener-facing gateway's request errors and latency since the page.\"}",
+      "call_id": "call_eNE7bqamDXFBp4A52UJa2rrO",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c48ba9c87d2a225bedaa963e6f7",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"player-core\",\"reason\":\"Check player-core's request errors and latency as a likely request-path service.\"}",
+      "call_id": "call_FisXF73Cfts1cmXeuOl7AbUP",
+      "name": "get_metrics"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c442b9c87d29d483f422776333d",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "name": "resolve_dns",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "name": "check_tls",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "name": "get_proxy_stats",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 1090,
+     "input_tokens_details": {
+      "cache_write_tokens": 1087,
+      "cached_tokens": 0
+     },
+     "output_tokens": 114,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 1204
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T20:44:57.145809+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c47245487d2b2b9fbca81275d6d",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_cQmFqGWJadBv4z22UOMSFDMD",
+      "output": "[s2] 14:01:48   notify-relay      deploy  Routine msg-cleanup rollout completed; delivery success and queue depth are within normal range.\n14:01:55   session-api       infra   DNS migration begins for the meta-index service name.\n14:02:25   edge-gw           alert   Session request 5xx rate is above its usual baseline.\n14:02:38   notify-relay      alert   Chatline 429 responses briefly increased; global request rate remains near quota.\n14:03:50   session-api       config  Rolled back dns-migration resolver settings; session request failures are declining."
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_eNE7bqamDXFBp4A52UJa2rrO",
+      "output": "[s3] edge-gw (time, req/s, p99, err)\n14:01:00  req/s=   193  p99=   264ms  err=  0%\n14:01:15  req/s=   194  p99=   262ms  err=  0%\n14:01:30  req/s=   199  p99=   265ms  err=  0%\n14:01:45  req/s=   188  p99=   259ms  err=  0%\n14:02:00  req/s=   196  p99=   259ms  err=  0%\n14:02:15  req/s=   212  p99=   276ms  err=  9%\n14:02:30  req/s=   207  p99=   273ms  err=  9%\n14:02:45  req/s=   194  p99=   265ms  err=  9%\n14:03:00  req/s=   205  p99=   268ms  err=  9%\n14:03:15  req/s=   197  p99=   263ms  err=  9%\n14:03:30  req/s=   222  p99=   277ms  err=  9%\n14:03:45  req/s=   214  p99=   276ms  err=  9%\n14:04:00  req/s=   192  p99=   259ms  err=  0%\n14:04:15  req/s=   193  p99=   265ms  err=  0%\n14:04:30  req/s=   190  p99=   260ms  err=  0%\n14:04:45  req/s=   196  p99=   267ms  err=  0%\n14:05:00  req/s=   201  p99=   267ms  err=  0%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_FisXF73Cfts1cmXeuOl7AbUP",
+      "output": "[s4] player-core (time, req/s, p99, err)\n14:01:00  req/s=   186  p99=   178ms  err=  0%\n14:01:15  req/s=   193  p99=   182ms  err=  0%\n14:01:30  req/s=   198  p99=   185ms  err=  0%\n14:01:45  req/s=   195  p99=   188ms  err=  0%\n14:02:00  req/s=   199  p99=   185ms  err=  0%\n14:02:15  req/s=   209  p99=   192ms  err=  0%\n14:02:30  req/s=   203  p99=   188ms  err=  0%\n14:02:45  req/s=   197  p99=   188ms  err=  0%\n14:03:00  req/s=   207  p99=   191ms  err=  0%\n14:03:15  req/s=   192  p99=   180ms  err=  0%\n14:03:30  req/s=   221  p99=   197ms  err=  0%\n14:03:45  req/s=   204  p99=   186ms  err=  0%\n14:04:00  req/s=   196  p99=   185ms  err=  0%\n14:04:15  req/s=   183  p99=   176ms  err=  0%\n14:04:30  req/s=   189  p99=   180ms  err=  0%\n14:04:45  req/s=   199  p99=   190ms  err=  0%\n14:05:00  req/s=   204  p99=   190ms  err=  0%"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "resolve_dns",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_tls",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_proxy_stats",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_067ae0b7d3572ab1006aee3c4951f487d286f05655c268cb9a",
+    "object": "response",
+    "created_at": 1793997897,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793997900,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_067ae0b7d3572ab1006aee3c4a062c87d2ab0ffafdf0f49bc6",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7jxMl2Y1hZK0o17o0CiggAHdBbTGkHJDr-TDziJBxEMdmHIsiroWd87AdZ--4pjNQ3PtEB2wL6tl4L5jGtJNn5R1OONAF52a0L0--CR9iHwL37OOMtR0ptsX3ib9a2a32ND1EzdkaY7J4imWl2HDTaMc_Z4N7fXVtQyiTNWvv1YyDx8LeL6mxSVpVZg_64kyDRaf7-IaW2D9cLhjk04KNBMG5hH-caBi576to-_IRB4rujuCr5LQavsCS6o8J4EGrjtV0gZDGy1UhIEaH17GG0bE5ZQ5814enX7Wfkko3hkAM_5mt5XpUdBAOJRXy1VUTE_7za78PqnfF6VMybXnMVuLV8hXRSi0XngaHXuiYpWN7jbL5-CmTPTECInGqMmh-rv0g0C7Lddbp1YIFpKp_tQyHjZ-lbqMvTaysD7_AYpnAHNq9CCEJyjStw9YeZDUaftP2r-wABqcDrdWkuOewEoWsJoDA5FYl8FbCQsuRNeewFC0ki79xzwA2HFEM9dU6zUhSGl52ZuLtdOqDEf3NrR38Is2l-i6qxq81ID_tjObxpRQgs2WryZ_i6oeQqhe_FDlvzfZ8KNhX69ttQ3IO3gmIqALBD1mSGJCXeFSILIxW0U8Xd9OIA2gJ0RX7seOo14qn4byk2ZMV1Sc3rU9AAcMhc58ZbvESCrXn0P5o29zRDTPVGDrO2ijSXoJ56N5SddDCstctp8pt8Pt1Ajsh40UnNlyt0_MmYO7DhhT6h0YpbzH_h2yoQ2uH5_QZXPTMaBpcILJFtACBo3oUl-N7Q9_9cDxv1w8COL6zBII8UNRCfgBj68jxC8EjeUPF6to53mlgO3KjaEexCJ3uCq_UmQDbQe0Kmg1WvF-0qx_scFQ2kcMmQyUuN0ps77vXoK4FR4YCKAFXs0zHLzCNFLDLkHexvvSkFU4w6a8jomP18qK3Zfgve4nt4Qwx5tDNjZ_nUslQDs0U_ZjRqnzRmouhcE3fKnn5SE_Jpg5UX5NiYwyCgGXMwkWaEvJFu9IZo6cXQ_TEfuo7VbwnsfnBtuVShAzDXfiI1dAhdZlzc0U00RzV9uTYXZkVEmgWZYNWB5QS3cmM7jNXsu54bUYI36aD8rIqS60S-PK-QL5mHIKLxjqPhXbTIeeKAbgYWdXzxB7SIc306-lpzGO1_tTnvLfDkspMf0dVYr5FROg2KLUKG-DwsHt6wPBLdceCarXwLBIlKTPqtzHAKe6L5NogIRnTkPzjRK97r_dwyweG6muF830laUqczNVUuZEzmIlEQrCineKEM90sddYGCFPJYDryg5hG_QRcwQDc0r6a5IQPx_BCcnrrCb6KYMr53hDs6pcXH3gwHSuBkZK-vsz_S2JG0VKfW_M0xW0uPurX_-kE6jTkGp3RjwC8uyeaFyTKkRYyB0yRYVXMADDX5DpAJrI37JbIKKESD6QCH9PSTKvKaalBtHBbxMXZgaAmffd3maIEoEbb0twOdJFc75Du4tEGOF3EMdlusZWhza5BcxMtcpin_s3o6r02kngyzszQKL1H26efnaAuQy8RKwAQI8E69aCd9lr4qUUN0XoZ-fGKHpHf1NcAvsF6geDkzHsiP7FvKapFRYL6Ab79_Rn9H1Btsu4mI5gD4jw86QbWJA_tAXcBw4Myk_-OYO2FgV6FNWiPDNwYZUOXU4UwPSf3xsNbV242H3i0zHrksMSx06lwHCT3VZaP-FDuTJNHsK3EXFzam5VujJxwLGx0TeY2DCMc1DEmLDU2KUTW0PuiEiTvgl7XHPagI7R1TOdoDz9Hmnl88wE8CXnWIJPustCfnA3egRawEnFT60jRsSDWsrEyxsFuTDIDDpVuufXuvdAlTn89TcW3BovNssBsC2v70TVXSXEoHaT3Q8Io2_QFNlm_P83LWklccfjbEFRoa6oLm-T94NxCsEll8m9i1PKi1qoveowwuWkCNZj0TewjWwwKj_jYlQqqA_FeFb92AQBwBakvV_xecuRYfIl-zEQOSWLTRdrnzMi9C484ybrSvJidT6gA4prj2VN4Dfyk1tvI9kpO8umTwPGz_mB-24CUq3emauC5ITlhazlZKRkWf124BmdT476KdtbaNFVv5h0UFIq1OTbL-Pyz71NlxEpDmIfha7EW1DQZLQsl1BuUOUxkVVEpLhbQYYJ5YO7I0qz2tKZ1r4isLJWpaG708FAPm5-0inGJTGa4PlH8rTwzmYv13tpPsM0WPXSarlhwRyZNW2u2I1PPti_pZlsNG3KzdF1WSxMjsYVftFIHaO5Vpvntu2uBeiVWk9sha_AH-p-x4q7kpwhgFXJIt-8tApdgfvznlAij-Tx37aeXtf3cpHhPUUFYwv0DLk2SJCZWS372fOah4uI",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Investigating page issues**\n\nIt seems like there might have been an issue that has resolved itself? The changes involved a DNS migration and a rollback of the meta-index, leading to a decline in failures. I need to investigate the dependencies of the edge gateway and session API. Checking the session API's dependencies, metrics, logs, and overall health is also crucial. Gathering those edge dependencies and session metrics should be my next step, as well as reviewing logs for further insights."
+       }
+      ]
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4c500887d2aa592e49199fd1e9",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Trace the gateway's configured request path to locate which downstream service can produce listener errors.\"}",
+      "call_id": "call_dWywMkluQrNDxHgfpUFCTrGx",
+      "name": "get_dependencies"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4c501c87d2a2bdd662bb74b8d8",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Inspect session-api's downstream dependencies after the DNS migration and rollback.\"}",
+      "call_id": "call_6Y5AQRWAUTlLrzEWIntWy2NW",
+      "name": "get_dependencies"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4c502887d2ac6c74e8e9fe66b8",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Confirm whether session-api request failures persisted after its resolver rollback.\"}",
+      "call_id": "call_4V2uwmlssx4pvTJJB36L7qR3",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4c503087d2bc8b17fb70571b9d",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Inspect session-api error samples since 14:00 for the specific failure mechanism.\"}",
+      "call_id": "call_QOaq9ERwUP8wo09ZwxjcpYcX",
+      "name": "get_logs"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c4c503887d29f8a7928ec248c06",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Check whether session-api's own process is unhealthy or whether observed errors are dependency-related.\"}",
+      "call_id": "call_qpxLxnik3RE04rbRZK6mqfAA",
+      "name": "check_health"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c47245487d2b2b9fbca81275d6d",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "name": "resolve_dns",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "name": "check_tls",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "name": "get_proxy_stats",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 2315,
+     "input_tokens_details": {
+      "cache_write_tokens": 1225,
+      "cached_tokens": 1087
+     },
+     "output_tokens": 242,
+     "output_tokens_details": {
+      "reasoning_tokens": 54
+     },
+     "total_tokens": 2557
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T20:45:00.655089+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c4951f487d286f05655c268cb9a",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_dWywMkluQrNDxHgfpUFCTrGx",
+      "output": "[s5] edge-gw -> session-api (all required per request); timeout 3000ms, retries 0"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_6Y5AQRWAUTlLrzEWIntWy2NW",
+      "output": "[s6] session-api -> docstore, meta-index, notify-relay, player-core (all required per request); timeout 1500ms, retries 1"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_4V2uwmlssx4pvTJJB36L7qR3",
+      "output": "[s7] session-api (time, req/s, p99, err)\n14:01:00  req/s=   190  p99=   254ms  err=  0%\n14:01:15  req/s=   189  p99=   250ms  err=  0%\n14:01:30  req/s=   202  p99=   263ms  err=  0%\n14:01:45  req/s=   185  p99=   250ms  err=  0%\n14:02:00  req/s=   200  p99=   260ms  err=  9%\n14:02:15  req/s=   206  p99=   264ms  err=  9%\n14:02:30  req/s=   195  p99=   252ms  err=  9%\n14:02:45  req/s=   186  p99=   248ms  err=  9%\n14:03:00  req/s=   204  p99=   262ms  err=  9%\n14:03:15  req/s=   203  p99=   265ms  err=  9%\n14:03:30  req/s=   227  p99=   278ms  err=  9%\n14:03:45  req/s=   211  p99=   267ms  err=  9%\n14:04:00  req/s=   197  p99=   261ms  err=  0%\n14:04:15  req/s=   190  p99=   255ms  err=  0%\n14:04:30  req/s=   187  p99=   250ms  err=  0%\n14:04:45  req/s=   192  p99=   257ms  err=  0%\n14:05:00  req/s=   204  p99=   266ms  err=  0%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_QOaq9ERwUP8wo09ZwxjcpYcX",
+      "output": "[s8] session-api: 1980 error lines, sample: 'WARN meta-index request failed after retry: dial tcp: i/o timeout (resolver cache generation changed)'"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_qpxLxnik3RE04rbRZK6mqfAA",
+      "output": "[s9] session-api: HEALTHY  own_error_rate=0%  utilisation=6%  queue_wait=0.0s  pods ready"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "resolve_dns",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_tls",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_proxy_stats",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_067ae0b7d3572ab1006aee3c4cd5e887d2b37acaccbea984b2",
+    "object": "response",
+    "created_at": 1793997900,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793997904,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_067ae0b7d3572ab1006aee3c4d8b4087d2907b4a81673bdcb0",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7jxQnBEnP7RhXwR1LSpvFBXHBEJriogB4mLrhtoiv74NewPw78PSfOSRvj9qUSIrkMQm_jKfZkPYYRDfjQHm2hdpfxH2le5Qx4VOCdWTC5zKmAJIYm3z5UWGCehSn4ngJ58DFQqRaA9KmVi9nrvFeIzyQkrngbtZaiNpg2wpooTCWe9zk4Kxyn3tWOeeToOqz81m51enViiSChI3C8marnSpHLW4UGRIH4jItGdN_sIGI5mcA_m9VzH8XJNhf0peniqpo_dWL17-xWd4kRClsaT9mvE_tv3KsPpsZR2EleXC-j1dP9GLuXq4IxcymWxkPPXbicQ-kfChSe0TQuMZRA0KmILs8z22fn_dHXJyrB5k7LnZIw5X67XrEoTNmy4ry6ijLmHKPJoqWvcAb-5gvr17m5yIQy6vcqKsstXKphxJ4aPxJb-ZraPUk8DDBMKZETD8nJ62X3J4j4vBB7y30MUXfTKG7ygZfARhd6PT1jjdXLYxpxGA0VLWmdSRea-pv92VioA0Cdo25JqXhBklTDDBRYT-FKP9MXDFwAUUzirwfctltAvybNSP-Ik0_1mMnYMUn32dX1AX3WYTQ1BeAq3lAsb8azK7I6iD1kF8t-ULerUgqGV1-rCa78xIM8Ca5WZlEVjVLpsUxU1CV0LlGc8qe_izKShSFkkoXqbL20hKPV8U3w3toge7Yxx2VHP0kysLY-YpWuJEA1gtcFTvlTpfv5LUcFli4ZznI8C5V8H9IKgBwSs3MkurgCDwsK5LUUyGT5nUK76o5xzllE8xweXybf-BVJ7wG77GYEBM7M0l2Tr2Chbg64besLReV-I0GPdKbAqnpeDAzDW1xBlVWBpFkkwMCuALVMjvWDstRxr-6s8MicM5BLesiU5M_REf11BlV487tULA3ruUaiK56dBdicNzhWxJgETX8kdmkw93kN2yWxwuRVCZUpgMPnp_GWm43Udy11OW02ZFeS9LY6BXea_w1Gw_ic_G0aVcdMhicKxgJqXDCpiI_x0VpttyzjboA4E9h5vFzk4a_ZPX0UIqV9Kjq-A3Fcgl90uFty80fowgqUKbwsDwEAlRYa3r_Ebgfor3afECN5WUoqy6HqTj4E7cFqLjcyQcfs0MdYEZvXNpRAX_hCa_s77QS1buv9uOLsFD-qBZPqUlKyy2H22prdEeBicdU4MPEHF3t14BB1o2hASZY871WM1iFdIGyYp0lDJv5WG10m84RiBIFAtCQmihFTD0O5bOUNmfAnbj_VpRg7uCLidmkbcQSCLTQXhyjlq7ountpPD_aW0f0M4uHSWtCYODMIRToKYzTz-GL3uDpaa0E0ba_YKzOhaEFOhhBZZp7UWQshyXrHP1WvIs6GC9jVdjDdftY6r2Ybch_SAXgu9_jWdmpAabRQWvKR182Btsuy5BauY8rKnX34KCFjZa2ZqPhq7LACYQ7LeVtpt4iG65HjvdoSGR_yC1XK6N2EGm3948kku2Z2jCAFI49d21ujZjdb1fiKIMgjBDif2pHZz9VzcA8kPg-weTkivsKaqTL8DaTFQYEtcPoWULmy3kUPjAw65-vB1i_HhtDoGFxAXeP2zOPs9-x_BkZsjwzCDugOEl4u5vicpr2bmgosCwXXNc_3jev-PuoMVfpzhUa299pWtYN5ImHc8C_d15t7vqN90qr24F4uFzhqftD6pAeK2oQzHz-MxRpKFKpnaL9auglWvlCFNYaUu-I6DMFQUESMjcgPxwvPE0Z5ODM4oRchCdMRhx_1Nc1XZLo5cc45XR7qi600YmNky9ppcgqE0blOEkPtu2Ns3urKLzrqEEOuB_ILBHVK2ooGJSte9xCcVL9lLFe7dOvbcP4dmKPM0HimveahCFaD7Wt_QB2e7aRnmT2_rMMktMP8fkMpbw5DEh9Of0xUb3XkeSN3dEg9TFMsktp8j5EhktbrDBU6kLSUqVOU45UbZPM2YNHyDw-ayqPoQxt7vVqjDV6Mx_upRrNb7Gvs4Ib13HJYEuT7KdQFs6iGCfQndtxz-CYW0EK1He_w6Xsv-lnxfGhD0LHmDcuiIazorVRK0a4dW84fZmjfx33H6y9wjAW-6tR2TzsJEWhq-QviFaJdOwugAeh3hYWTe8tPFtHQ_XtsJdk9OTs--1zIhChL6aWU5B0OMYVZRqvS6LLuk-oCdz7ScyKv-XjrOZ2rU_7p__XhDkkomhGK9VMOdPkRc12N9CYpA0kiMxqfLloVCEHohscscN0zsFA1tJC5pUbYsujEr-Dz3evlG7ms0jZB9-w5fvXZ1awulYUwvbf4Wam8vggvP_k3mKt__WpiA8SQlrvZ837ajhHDnT1-LNTH6zawGcXsPfnfQ7FFx81LpowdwfkVyFCAn1SzcksxM0bu0-14YVfk8Eh24a6TmcX84rX4_FJLg2eRiOgNDJAka3Y_l77pXR0gXRU5rT_-XwhFs1TZN57vajmvmZj3F_MqZs4j7tIodaCX1GojHQOXy18gbi720Xvv8beYk9Gj2jEZabT7B08G3iu5ec8vHEe2GPOu1Bo-A=",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Investigating DNS issues**\n\nIt seems there might be a DNS issue that has since resolved or improved after a rollback. The user is asking for specific actions to restore, so I should inspect the meta-index logs and metrics related to DNS. I also find it interesting to note a dial timeout error, possibly related to DNS migration. I\u2019ll need to differentiate between stale IP and network issues, checking those relevant metrics and logs, along with connectivity and proxy stats."
+       }
+      ]
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c5087d2a042e5a1509fac4e",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"meta-index\",\"reason\":\"Check whether meta-index itself is returning errors or slowing session requests during the incident.\"}",
+      "call_id": "call_eCIn083GyjRdfj5naOoX8kvh",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c6487d28b90fa65dbf2f082",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"meta-index\",\"reason\":\"Look for matching meta-index-side failures that distinguish a service outage from caller DNS trouble.\"}",
+      "call_id": "call_8NycoFqeQt49wGBLwVlGxSEd",
+      "name": "get_logs"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c6c87d2a8e7f8df735b940c",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"meta-index\",\"reason\":\"Verify meta-index process health independently of session-api's dependency errors.\"}",
+      "call_id": "call_3gmYoQvDbAlelVc86r9JqqeX",
+      "name": "check_health"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c7887d2b768a27070cb7faa",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"src\":\"session-api\",\"dst\":\"meta-index\",\"reason\":\"Test whether session-api's meta-index name resolution is still failing or returning stale addresses after rollback.\"}",
+      "call_id": "call_DftxJR5O9Gtwe1Uj5UgfPs81",
+      "name": "resolve_dns"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c7c87d28ede5ce6894eb27c",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"src\":\"session-api\",\"dst\":\"meta-index\",\"reason\":\"Test direct connection refusal/reset rates from session-api to meta-index during the page.\"}",
+      "call_id": "call_GcG1cLVRHuikDsCPX7V9ivKy",
+      "name": "check_connectivity"
+     },
+     {
+      "id": "fc_067ae0b7d3572ab1006aee3c508c8487d2b5ef53f7358da902",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"src\":\"session-api\",\"dst\":\"meta-index\",\"reason\":\"Check the session-api-to-meta-index proxy path for timeouts, connection failures, and transport loss.\"}",
+      "call_id": "call_tyI7C9JdA8QRlaqolmvLPo0t",
+      "name": "get_proxy_stats"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c4951f487d286f05655c268cb9a",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "name": "resolve_dns",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "name": "check_tls",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "name": "get_proxy_stats",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 3202,
+     "input_tokens_details": {
+      "cache_write_tokens": 887,
+      "cached_tokens": 2312
+     },
+     "output_tokens": 327,
+     "output_tokens_details": {
+      "reasoning_tokens": 79
+     },
+     "total_tokens": 3529
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T20:45:05.017857+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c4cd5e887d2b37acaccbea984b2",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_eCIn083GyjRdfj5naOoX8kvh",
+      "output": "[s10] meta-index (time, req/s, p99, err)\n14:01:00  req/s=   192  p99=    33ms  err=  0%\n14:01:15  req/s=   202  p99=    34ms  err=  0%\n14:01:30  req/s=   199  p99=    33ms  err=  0%\n14:01:45  req/s=   180  p99=    32ms  err=  0%\n14:02:00  req/s=   181  p99=    33ms  err=  0%\n14:02:15  req/s=   191  p99=    34ms  err=  0%\n14:02:30  req/s=   176  p99=    32ms  err=  0%\n14:02:45  req/s=   172  p99=    32ms  err=  0%\n14:03:00  req/s=   180  p99=    32ms  err=  0%\n14:03:15  req/s=   179  p99=    33ms  err=  0%\n14:03:30  req/s=   200  p99=    33ms  err=  0%\n14:03:45  req/s=   192  p99=    33ms  err=  0%\n14:04:00  req/s=   198  p99=    34ms  err=  0%\n14:04:15  req/s=   182  p99=    32ms  err=  0%\n14:04:30  req/s=   197  p99=    34ms  err=  0%\n14:04:45  req/s=   189  p99=    33ms  err=  0%\n14:05:00  req/s=   202  p99=    34ms  err=  0%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_8NycoFqeQt49wGBLwVlGxSEd",
+      "output": "[s11] meta-index: no error log lines"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_3gmYoQvDbAlelVc86r9JqqeX",
+      "output": "[s12] meta-index: HEALTHY  own_error_rate=0%  utilisation=9%  queue_wait=0.0s  pods ready"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_DftxJR5O9Gtwe1Uj5UgfPs81",
+      "output": "[s13] session-api -> meta-index.svc.larkwave: A 10.41.29.3 TTL 30, 0% lookup failures (last 60 s)"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_GcG1cLVRHuikDsCPX7V9ivKy",
+      "output": "[s14] session-api -> meta-index: TCP ok, 0% of connection attempts refused (last 60 s)"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_tyI7C9JdA8QRlaqolmvLPo0t",
+      "output": "[s15] session-api -> meta-index sidecar (last 60 s): 199 req/s, upstream_rq_timeout 0% (timeout 1500ms), proxy-path added latency 0ms (upstream service time 33ms), connect failures 0%, TCP retransmits 0% of segments"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "resolve_dns",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_tls",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_proxy_stats",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_067ae0b7d3572ab1006aee3c51260487d2bc388d684e9c2c4c",
+    "object": "response",
+    "created_at": 1793997905,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793997922,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_067ae0b7d3572ab1006aee3c53f39c87d2bebaec091207147c",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7jxiwy5aragaFs2QLcXnkrqJqwBmo2LPfV4Hl_r-10LjeFtWg0Zh0uY4De8l3INbU5x9OykcFWW4OgrRcILH3iAaAtlkTb08YVKmDs12HsVQRxyyk2SGPqDA2JHfNytcGSDonAeUASRF1cSNqbtmxKL9bdZ2KG8Ku_GvohSPtVjcyQv778riwtmIVmpBB974sxowNHg9eKRVAxD0vGEYrw4527u4dLxANnQnLmGn3fmhVwydEsXgAfoFdeWQH0_85YpqVYoBKzWy0-E9IV8DmzOHWuiqnBwvbq1EZOfrgsgPNUobpGY4Th9dB-SIK3gsdTiQZlTCBYz4BFw6DD1w7jHKlYd-J_1WManUYRdlsWXIlHwrKIE62upYrLpNkcDtvLb_bUaVRfXwJg7AbP8Xmq14k7jKuIAqvWRyhWJ9f-TLAtu9qEoZZGwtJj4W9h6emGCykjblDdaOS0IYA8TfqeIDm-22tWaWXVY0Buy1by8kqUnrHZQ1yvQ8oZqn7NfyYTeFPotOrFi0F0b6ByCRYveu4reCMFkqy9GOvSmZ5UvFDF4vTvzWcFEYbtsJ9a8FYdaJz6M8FVEz33qDBWvuT4fh90-TjwPzAgCbRGby0tieAx9vgfxm9STivPxZMlsVZ7e1zlxuMfFg2TufjTnkpVPYP-ec_lv2VuRAn6si_NG14Ct_PyBTucH7UAor8DYX1c6yQmQRm6-lFtIM28UKNl53MIqgKlonI3YLx0GrQl8mTEAe6QcrqNEE5h2x6TTlrSzzU0u7PY8FI9M68qZ2l22A2suGsoCeO-nKx6VPo9wySE3Ni0_TNGZd3jlTdtpVSbSmWq2JosDfUFzXBT7q-BYSkC3wUAc1Ac6eBPYZUjgtELETyVJ3fpOFI9Cq9zuqWrDvf961raO7y9OEeaDjuOr3wteds5QELq8yUX1nOClXf90z-MNI8cr3KWKxKobLMKDxDVcus2NeolKqPZE0DC0DtSPbltJko7Gc2x9XBrddrRfCChusNyz7rh1mHuYB0wSdsL6m-4VywAEv6yzZynOhC7Aci_I1cL-3QOgkuClLufPmwtQ1n5bCAvNLhf6O6AiJR0nf7l4ia6jRKs3IuzPmkIpTgE0u7t2Btd3SdswHc9vo85F1aXTVg4l-EWFrl356iRsZX4JAD10g1zGphwdyeDIQl7Xq3EElydCkDNXEbWSmxTzejr2OCO9dKy0gDuq_WwqpPesz_vQmS7XHWjrFrFEbyA-NzUsLZEyxg3HiXcH7VLRxQX0R7gPtAC1zoji91cphRB5S3Z-bn_6pewqqVXwsEhbpIwRrw7HI1p_20d-kYcYSAtKb4eA6-lKgeHQbX8kHr06TShzApaLCI4D8IvTbkwHYml54pPQjOY9VSzIWBIH91hG14H4OzvmRV9q2Jd42xVcPHAqTihP_winzq_qp-gPTy0IkDvuuN9M-5Wyw1D8EZbHdYC2J2bHYS0YkDKtTILasCmcHK3xzICF6NaPu1Anf8PSD1wXa3RivdtonSHyiVmbhYYfTdquwGqGQ4WThuHiYE83-gXPeoVKG2SzeTGTUPk99PspBt18vZU-lcb2ajOT42URY4hRsf1MuDx_h4GvgeMXnnxSUImd9oY83n4XaRBTEql8gpyrpTUqN42wcTtOnw2ataaSHz5QGZ6OqFAWl_xXArpWfg3oQLtiVcHrQs55wF0tm8SfNvGzmlzdPRmrmyHzQwotlVCp27ORcKIT-1gZdxPClA6lKHBDF4MI7t56aDGmfJ1NY0xKeVeOjTQFu0e1_jeEvOr3zKMU_f_cIMxX0qs3vwOVeDK30oxLrvY3pAQtA26Fduryv1h2LwBg3nUU_A3nlRuah4NzHDLpSBwmHO_ZkKbqA97eajrpJLCpmrsH0eUlnuGC01_5sGs__98Dr3PTZuGkqnyQHtIzsr8tIUsurH6t2zSRtzEN0XYX740nSqfm4vgomH2SuMlAVBC_1BhnkLLVcaqGo_1pEucd9y4pUREcXS3GhjkKSLIjJP0_AeIRR-uy_O2h4fYvpWd2aZD2FB0k1q4watWG8DGTNJoau_CJxyNZrwujO-ov5WD9wBibirb8zlAVlHJ-aApfUZJIc7UVd7ikXJqN6uxtOuZSnqG4a0SyVvreSizm0MIGrcdu6sQRl8nu_Jlf9j0Rs9nPq2JDAFydPktIHZ0HxquZHrt-vfG8FubDEmO7M2nCL0AIkbZaYqwRD94NxYs1R6UGlcCqWw-qU40XFoR4eqhDR3X_8tV3EzUU-6ob0EMlxya99BUrbGq4MPZlArpucWwxMn5UOsu_S5UekTfBH4y2NUmjadlhzTcws8sqfFOwSd2ZtmqmdiS396KkLZYOq4aRhUxwguN-_XUNIfaD2KPXAuTq94Rdm-VLjJI7gxaI-Tf64-P_sRQfJNZRuMQKBLwjUTbqY5l82-EuGu5KT0E3MlNY3ObhjpMubAgJCe2d4kGfa3mI-00iqfwson2Dfl5WtovamuDCNo0MdXFesEjlEafQtJW0zX5LjKU7ywIeubd1gVgsXr_2TCGMsjopHAh28tUXywn1tHTVUPerEtKdwjpBQzXAe1bNCqBIEcZfoLAzD-LJhcUdtQG4Dpln6tsavDGrBliphHbTqYtrRDxJCkn7ph_iXWqJpn2982VXhVVPOoDSEdMgzHKbfMBamnHF7ZQVqSdYWbyKlj7M7GxtoK283NXdeVly0hp_ltEbZASCGoMW6XCkVM8bDjDWF9YdlToR_3gJOvig5gFlbdnb1RbzZH3sbtklYUbPNy1mxNNPNYiAfZxAFGOr5chptfXROKycIABH4CwzOiqyCqn24w3wc_zxpPIEIzBmhrHllqNvmKp3uMHS6AqB7eOFlvH3EM_4dVoa2yJBa_A6B5cFpUCfR6MTm10esugiapIrnfFNRA-Z7Wf5aP65nHpWEX3ICD6JAXV_fIN4lg6JUzFNAsj0pi_IOK-190kg9ftdJ-OyUMbQjs8F1hUqGKzdcesS71cNBzfm72lC1TiK3ski9uWbvvDXK9BRVgrxaCO8sNTRE660Cz6Eq6xhx_VYfhjQwdT0aF_0lj86s_muux09bOz1jRf6KAtdnPdWjzOAyh7Am7ETuhsQ9H99Q0vhY9p0yyFlLK_qcYpkrqtFAKAZNRK9dCTR8mOkBB2zNTRHu8WK4dWL9jM2ybNxXVwg1FImDZxUafKxy19fPvFDlACcCrlbbfng8IZqbCBXNAZSHol1q3k02H9ISkhCVLx9VV2K8X3-ENW--Pv5bGyk0IOMbWTJ0sW5fZmgYTapKfgwjl3BCiyaw2MM4hJRjUcafgzGBaaJ0PNsT1hQGbD2lxRH6LUt5y4j0AsseRktZekF88rPDkMr3iIdnNFWE2okzdHLElNTt8lA_D6AGAReGRyJi-PL7dyT9hJAx6rxnBLQyP7wOWPMg8SBj4WBJtZxBn4GimjZok42nhaUqNwUfJwHj04ZnN_I6QYJfe7IHUwWARLUQNIZC8IDDTmz1fPpSUdmDPvcWumRMxYg8H_FWTse9_SQ8U-DWpqKlbtin-9C9uxOW6kBrbx9ne8mLwaFqrSXfrKcZtcPG9o-z3OL36SrCdHsbUp80HmY2xOp2mjHhuXsM-XtUZo7IEfMaLV2n9WTrlKs3G-zt5QUF6TPevbb5isCYE-j3ZUrUT45NVTeAxUrS62xVFAaROv_0yHbNAAMSpB6HRoAhyfbg1fdlv6F20QGSZu2bgqA9X2WZIuNV3P2y7e8mnbhwg-P-d-Mii01hqoHkyEJkD1UzNCzuLlLZmekJ2Upvw8AEGxr9xuOoJFnp9cMMdXNTYnFDE06H-TGJz7ec4LIc5THRD7bE3FlOXRpcb09-4s6AyYww7edsK1lHtjq3YkPk-J0sUfcgzzqf5--Ltvz5mtt8S_TO8vw5vq71Q1zgnm7JXlWvg3FBDIhjgesTxpJrnwtDFBs_V9Uuz3ItZT96PlLM4EpUqnx8WT7loXjt8mblXjeBQ4-kTDdEEF1FvLxQjfIufpE_Kqy4dLeaM1oGeW-BdMnIgMxblHhTFqc2fR4v9_nw3xxAlooTtVGQznSRQwLBOSU7iCw_lqWi8sAv6DMYth8olH5ZGpWQ-kNhREnUmj_b61twrPIMqmcXYCTZ9nRMGsfUigals6EJjm5KsExXpDKNgpBuCcpeQmF-1_Bvjght6rnWoihq24lGsgc0f4wt5qUOdSmSc6DB13lw5YEZ3yfLl5pTmr_5MKbCU2pDE2DsKSQofMZL7Un5KH_wI6o-LOuBz61XX7Vwmv9k0u-Op4275zXryQDcZERTAjW7K8bACBtWaLTLcynjB_yiH9stpjhF7gG3aE8XdbkcdN0-AbfxgRPcnW2ZErbLUwa30W_-mxKFmjfXC8G6aOruhrzo6U7Tc993O5T4rU6YVzSXf1xBaCybiN5Dy5ZB6pnU9izx-HiCOV1XgnsfSh-L_IHZv7aWvCoAC6qLQsYSj7-BxR1NsDhP8Gpc7NzAtNjmWmnBp0eCYsEYnsLiV4zdqSx3qPCFCTpFHm2UxE-RyN_udlOXslzueqcIvRq4lBWE9_iZtFOgDtSRZ_VeKv9-Iwu_nIcKLe-pNvuek9c4x_zX8UiiFU4pCqusGEFaC-lWK2zPzHFP2f9XZdpoJHpWBTBiyCFwTW0BslAlXvIYVlyVwp1uPEZ9yUEkhf1DUr8t3l7p8OBC3JBhQE6CLrS2DJJoooK9-uUVaLnnlwmR7kEyMmXNCZLkKsm4oF5daMd-Ly7_WyrblbA6lno-Pt54lFBgXc_3LxHqdHNN6zf8-y7qPqfrOh4cpBEs72ZY-AOy6kXo7pOHUt-u4XAz1FadU9IzRoMxcxhI9q5xQJp4_13VAdWMohVFg4RSYRCuTbT_hlb7Vg6IBkTFYe0O2gQn3uReeoSDTynRmPqpz3fpwfnyo26J2b8MNxUWtHCmEvJkU5dcR0V_QX7cV8ndKCFOBvbskT8mAvOoFh5w3xr0NdUho27aQ19XqEnpAeakV9D0aS6Pahm5FThsidSKOH9msb5U8pDoLvm9epTJIWdlmQCozatNGxRrP5hql-59mxeStotbq978634-Dero8WIpbxSwUX_Tf6oauRIcOErdzWDn2taq-G6Fj_nDDSyVSXtH84TqHR18BDk_cUxXvD7C07_bH5qknKwLwetjLXqcSvjbgHd8TkJ4jqi57NIekyW47I3QLJ3Q_zYmatHodzTuDu0tB1nR1ySXV-ZStw2DYUqZy3BUF2ibTzxo7iJXCHtgrZxRIXOO1Nrn5Aks5DT1ukppkF4m-3XwiiAKwaRJXKBr70Ci6pWQgMb3Wi6BIzWLWo0o58xhy5s-fmyJr3HsPwZjFn4vFdgbmIdD_NZAae-eWdDfeLJigedFoYGZOUbiqJ-7LrmOkopY2wYVqEf4XWSxxTaOfRXdqzUU6TPG0lWc6RsAL2hYO_Jwml8FioP70RwujsTGJoboCJtDrTf4gYxTgR_OVGybr40JguCPzS4GCzoeb8sjsS1n7nRu_vyjcz57vIzwYsAyxtIrDE2llqXtS4UXww4b_kO6jnKowB013YJE-nk0zLbJ3NL7yNtjPe8IQoHCszKSJaBN4p6jLVgffC6-3IeD7tGLsO3sVTDXFwy2zXwk3lZ8Y7yLonjfDrCbVMItYsjxzSarItIYZQvtbSkZDPsMsnl-m-lv5rijpZVqBuzZuqUwSGILJO4zxVuztFLSmMpdUcU7R92EL9U_YWeK8Frk4dvlyAGmZnljCaShf_7RGpPd-7HaPXAn8jdyFeDwfiWxmq9s2hLm8-1SLdIW1pVN-PMMYVwoqor5IVq9ihl4ex61XKkZOtpSbzWqQvjmZQoO1S0tdd0Q6xvkF_pkotV8erD2Oe05dm5RCyKssDjE6pGMxXtpDNli7ccrlvqV8Y4neqlRBF-6i6q2qvQynuNYUlQ1x7glhFWNYhmiMYeS0OqPoulGV2ckcHc9POacqRYksGHZfdW8LFNfaRIx-blQdI6PKZW61MUHUoDrjbpEfjojy5u7gdhUnFdNcEsE4Dh7__3GwleEcSzpdC9Y-YggZM0XZy8daouogQNyDPyWVQTdVqfiSM3q8sI9p8luQ6YjrfvIUVovVLt71WL-LktR7ZgmQ3ZSI-ZQUfhYN5toTP-qCN1tc-HeCleipa7NuAqciXJdidYfKtwNEfM8IZw4E3CD6RH_Ff0gWlMkKEyUd-qbJljOaVDisuLRtsuA1LTY-HnTxM-Gv-Is3oTxBsgve-4wJ1OpdfKozeqNUUxoKkt2BZUcPdxmxhEPl838oLSMw60sFgZZHa9GQtfwrtHwm0rZ5gKQZHe_GxA5Fo4SVYp7g2wY_CFvgoMcrRf9GOGsB3XV28PmIpEjvya_uRVo1A4NiT0NlMvkdKW0LkxTfgSMjsQGorYfRr6biFPM4wjw3slJHtYvSTnmX3zTS9Gj2G6GYjsWfCjMDp-P576WL1bKbiyPeqhn4ampXSU6RkAYSGrcY08Tpc8UB8idwKtEFf24WQrAbQFT57dHJ-0YgNaJ7-oXV3J_m3Yd_7mPN2CNyMSwGnh171U3T61bw_KvSvSfHiTou6rifQK2W0ecT4syepEK4AVp3O5KWQqDjcm5wTCePJniZN1Jlu_DBujTgZVBcZR7lmevaRrCc0xhVPcIKj_HdMfnAym2DzDlvu4DEh_tGjnKiTnZs4kO4kJtdviYyikHyGkWgaD5kwyJdGwXjQREsVu-nCiEY2tykZiUb4RGLVgnv3nuwY8D2dmGlZoOSOtTOb2zC_lIdsDE6JAJLQCL0N9yAX3c1FZZGetKx_PjU7-ity-J88ui6qIwQm3xeu4Xd9QfZLkyFK1bg3szH_LTRU9kZJrRobHBnF9yUB5e0K9m-BDbzbK-RKqQZViqal2mqnJM9UynDCHBUbbCtDE8m9_J53aKh5mqSq8OcjzkgoT1g0GXv9tB7DRpBRYQNw4rigCcp9x0NcTG025pWeqF9YvQ2SdjX-FpFwGyf-8KeOvvV7mZ1h6sdJBPGq2l6ctjlzuS8GlLPQq3ZUhVuT_9SBFca_7uVv6ahA2WDxKdn1u4SRU67K2hUXlV450mhDiD6A83OgaiagzjVsNjX8MECNRcezsIbUULvuks8DfV3PfHAT3J1Fbml6_NTcMtYMOPpkQP4DOs3edilAwnRnZrouvhKllZ6ta_N-8nO8yEwqvYtcIlOMuD9tve8mjXtNIHNXmgszuamRNaITOpkEVPY9A2qvcWTGSOCw1taCGfGDKw9ggCUBdHJvzST_28RKu9_ZIpiaRFTI-Ia0ZtP8CD0FNwTGQEJdl9-pPXEzpCxn_g8iRgIyFBie4vIdQjKJqYYZlKSUvZTL40dnyIzFBHcUG2UazvTSmsnPkAkQLSwq9kkC4-9CLGGDFKlmu0_NuVLq6RcaftlfQE9Xt3qxs4fepQ4zfefOf0KkcQKaINA4T-RWC3EbynQpvWL9lhWgpP3Fbf_2tlomTdG2CY9u_pHlnqd_M42Mj4NxQubgQdGmf4rdTj0N9OvtmEIcwPNWrXVVtHKJ6FEBAY19yCDx9M_B6zzEDJVciqvQmI2yNHp54Ur4lg5PyWcvf6944z0UYIvdWCVEDbjMwrCGsb2c43ektzlOQps2N9PCvuY5x6QWuA4EXbwwfXqfFMHGexF62GMRI1ZpWNFwIMQ2lSRp3x5GS3pdUpZXlfTOJIdnlFxkLuKfmJ1mOX3N__MJQU-7asyYmysHD0VOE65rnrXBox9PFOnKJIhGCXIXCB5lZkefS7A8uR67AfhSBOd2zjGLChNApZioBsOnsHNd12mz-hOZsTzm3BNV-86noNFZTf5-zhXi8aA6sk38e-IxMH_hxIPKGswM5s1WU0dqgLRwTAa_aNkt7LKTh4V1iaMLCPF0gWZ6TgY5xsUshz2CNaZamW9jBrVeVPHlr-Ug0JeuWv_dkwujrpNflBYb-0z0mkEq78LMg0tUtLhiiOGdhkK4MfFMWRXGwnTpT87_j9KjQkhCXwXWlCuwLzZ_1yQuq2HqSBB05j7EC9MHTvB9hRenfNiMozeG9-JUqyhpayiSY1bF_7u_VR6ovG47ThEpnLbWXSyN-XERrQlkVtGPgyZtaeiFeXD8skwDbBklALIwxv3VFpgaPh5S8MFVELkKg=",
+      "summary": []
+     },
+     {
+      "id": "rs_067ae0b7d3572ab1006aee3c5974ec87d2a3ef055e9e290998",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7jxi_bimn2ecP5UmYj8EQGnLJWVvDBGIiU8HZu2Ri8t9BQnpFRpieEKkps9P0sLJL2xURBbxZJBdlM84Ug9qON2cMbgwLJQdA-bfalzRZeW_rtapCwDIqJRyPQhPQjuOzsBrDoazJab1By1QCylkUGfrA0ZXc6zZmkdUHp-s_wg9yKfp23tdqi4wPzBcJcpAGRlYjtLbSs7NS5JUZfyvJus7oG0TyBWG3WocamsjB88mDm3gQiWW7bC6z2lI8a0QG9cVVVlU8kUywbNoeZ8MPEE9R61GTi8N8Fy4Bv_ceDj2LaR-E0Gx8dGEHRLw8i7ARI4-GcIKUkeZ2Uo9QjlMarjWdWYG5ivaHKgrr1rsMy5OsKnknoWJLFJYtS53iQDyadMLH-0puLWJRoeymy8EqxrpVAhSAG8iDQ1Jg_odLTZjLvnXk_OPS6q5mTAimu_Sa7drXufypQ9xOiPby65HMTWOjrnpRgqYXz-NuAHAuXQT_yHpeAozAxVIzqNZrJWWOKvXv7_oFdXcrCwWSZHbwQTdvmh9miZmL_6O6ub-4jjzfu51aKvnNTE3ozxfp3gcVnXs10uPAwxu1_LBQaswWeiYwcxDWoTRVx0yJDq2iAbdJX-4uCtGh1k5LDYrZH9JQjxw4ouvM6Sjl8hMvqYuEi45g4hn7tmJgTAaIYX4aGcDfRGjlQQVk6lesjUxMQCV1YDQbwFUG08A2a2NtZ6OiqM3EP43xH4Jaem8jBOLy7KuZ4fFswbml4SPsyIMIn74sSj9__8X1uO27gzwh7fDJ36EetRQuZIW2EKQw1dWVkjgEvCD7XdLVqxCyCowdrkerBXfPaKq2VGy5y7E28uQhuHXhTNd3-lo_9tFM1aGaqTHU7hTMlXC5cF8gGb4-Wfitq2nU-0vDgdAm6VGyTrbmFkG98OF1lOxgs_guNj3iLTNDkbEa0tSCo9_bWfhNBDKmkVMJS7Aqpbt1sQeK7nIiNSzl6W_NS2gl3mpx2z9c9uCXocwOptuVQyCHS9kLuzGZqB1YibpU23vglFEBY0oP09aM2YlJFXJgBxZJYjU9tZX-0muo9AbC6xZHk12obGUQSjLojDS2xT_SChdU2h-Eitw_bkbyBhlmtJmlH8YwO4Oaob_uvSsAlVHA_SS7JsoPovj5czXqi0ajNbfqM5eGYw8ntpgnCgoZx1_hwFz3DzJCR3klK3RYk8brLwVh9OG7SEXQfPy0i-i1mud7hjoAI9D9qgKeUD4ZsompoYrSucfvSKOniN8nv0BGjALNuGP4mA8tVY1vMSUA4jud7gdqAQBIcNMz4G6u_WQ8AHedgGrmU5oShdBSsSwo9V02ezzGHbYsiTtDU9A4eIjNNtdb2xhXMkgBSz_PJE42Vdfe91j56Zs4212279wlWXxOn9sCT-myJ2P1SgKC_YIdgYviRr_maffsGrtb1hoqCXyTGZAbOD2IXBGZ0LPAHbU-qw3qOptiN73rqWfs2UXX5bZ6iTs7VgYXkhXFRyiliUw6x5_-QRoXFjZ_qqT64sweCwG76k8s5VHmNmg4nhOL6c4V5iVLtRjuw3Q_yJUkV_Pzo_khcroTXrilGbRkZIRn7culDhS9TIu740rhfOCQK5Oq-uAueCCz0mTCGbPqK8sYuXxDzoEugcil21z_U_RTVD3LAnDrJ9QPK-RiqaUZzQ9uBQzjFYBcSkCPxyKJRPmlZTahyCWva1K-6YkoKdE16VbPUot8GNGRsSjNRnpv0pAMrUxRWC95CeJxSQ3I08BTv5GS-RkKNhasQtdb59yWb1gR_X2ceLkFXzXfGNPyzB3nJ9FWtV7-5CBgrvgZcjIGMeVXwLI3S1KmjEMwbDQ0g2e12_sWvpMcV_sA-36VlVcw_h06RTEYY0_iysxMtD3KRtACVSx-v0hKwX73KcmA1VMZ_2ATYXF1TYXzgn2Ip11E4Sfl6LnT1COamhsoDiCyN6YZo3sEhfVMep8myBUIfCHAZ9Ql9nHjYn3HQEhfemYxVV_DjeNGRGoPNFW8LOunImfkJ6cMU3IJvziJZyn87cEoVELWAFE6CFCR8BdP1EaQ4V6AJPDlNEiBCq1A2u-JbkitwmlenxsnBM7ywsMExF4oPc1Mue615YXIVP1tW61JCTA8WwAcRTcQETL3ApXuNpdDyM9z6BWv80YqLHQBEMOo1d2LSOuo3_k9WmSTfCooFF1LzBsyv5oCmkvOvmwreX2F6rczvDWLTJ0dDQecoj95I8q4zvfiW-_KZs2w0DYkxfvq4_kKNKvRtz_C6p8N2iLuAUUY0VWgBGyoEbOZIP2WyLobBuXs0E4FkKsi8Kor0uS5qov6AUi-wpEUm2EK8n2Fgx7UMdJYudj1LRKe6ynJJOlz0CB-IaQPhxxXlCLcHT-yMexrBhXaUxo3GkDUsWFzTWq0vI0ACSw1wyxcFIQedXkLM_htAMPVcIs3fOwFt7z6U5PvCABYPM_PLkykW6oRR3LgMEpSF0MCaRNVnXvF0fjoOB1DMH6hMGgMcUdzZdh_UfE3IP4QD3nTTACTTC5zNZgaZwW7G-qd6I2jjvmd5muivLtVwZWXdRkwehPWwMX1Cw0fjXG7bcA-oKK1b6IGCUidE9Ve-pujE0a3GFTk0RqdQkO8__vLYiMvmpmAx538R42eToIAxJ73Txm8_N9trWgWEiPztCRPhupmSJD0ur3Kro0oIj494vtfe94wbT0vj_IIVIjaFhY-VJLHwFjfeI15mL-OpzX-frdHry1KvgCQ7dPpx9zCraHl1bIMj7LfQkQsAk7BAGwSDYqmes7eYYki164nKCxHvtbofPtDXEM1IDjiHu36sju4ZkCvjZqZJHYUhiVTkAAEBU6bJr0okUTeti-eOypkuCEgvcrQe8MgyjbPAEaN1f-3F3OkI9gC2GrD8V5pP86C-NXXblOJSv2wNqLuTNMXhswVyKLeWUcIYlOuclm1hG9CKRPVNjObyQ6Qty_zYFZnVlw87nPO5W0PZEu569bEtr1FUQsrZlGv68Zqkwgiys2ErMpDTFfEVs2YckxJR8GlgVh576ojkL7P0JxuJKH9tujBKeMY-iUoLhbAugmhFqQMFz-ovfPIEyBhVib2Kr3e_MLcnThW4Xy3OE1I2MJcWxRwUcw6jwcBPdNXg64OXP8b1Ny3ECBjjTCthwdTXWXqgZgzGacTCAHylnleHJeBJvnC4ybPb3SGrhPN8RCkSrVOMW_ZkgTofawAGmfG8dUlOaosucdlNtmLqFlMf9qYh9MisdhOKP4xX-yHXApnJe1KSmCe-9n2PVHEYZsHw_qtWhZQOqNkqB4WxFVc6J8F2UpsuOZetkWnMJCMzfAPaH2Ppj2qjj0VU2aRmzFFj3m7WelVKmCJy16jTT-3AShJe9m9PHD3QLQ_dPH7D-Moo5Cy0hP4xnmPH74RE49dDaCv0nKcxzsc56o4T1api41HTUJVRLYFgSAIJrXuCgXRb2-paE-FrK3icWO7vxD2bj2IDAkzBP0sXU8ilFBJfrP8VBqZR-QbOHLXjeCghBm58PduSfFOjfc9Yu8Imy5N3_QdIw8xBbvaD38Mjn4FNiorI0M2rq-saOZPNirmEHHiknaLMrbLQlU3a3OA2y2Hxmg4VQ-Xqqww6vJziIUYFo87k5QMAt2dXYgMRzJkUL-GZbdsCsuktNEEX9yAZaFD1ehSLA8aphCXuJDFBxYOGtusjJp5sD7LuUu4MN_Dq7LqV6zvvUuJyfbwL5dxyeBqNLukcSFISqsWwa5O9NTxa5FPL1ZgsABS4FWbKfoqWOgMNH2GNVcNvFaXUaXHFjcRfHtJIU7LEVAlOnQqMAkR6HOvmuJDPtARkvSk16BweZvVivQgpHw5Zq4LiRb726nW5UdoKbi6R-KPmeiCtVX3ZyB04BLMtyt53DqlUQ8iMO-yKsTAkrxaFfbcd-oJ7brOWRgG7KOPsB3EygZatiUbYp1l1wwflvseQsD8SZxPadwChw0PW7CBbcUz-lzj8okMhwD4zywIbPcwLkP9NSobaTybuFysM_HkjYUhEDBaK_IIblPY6hU9z1scuh7nN8EVkIvwmqIkiwuJBiX9NOI1l-Awy8U1_AQO_JV6r77iDF-aW_O8fN1JiQi57FPzZiw5qbk-EtvdhkAQcV-jyKSJVp0c-dJC2ov10fPV8qIaoXMJKBFE4NB8maP3m_AAQYClDyvF5-YNevPei5DxQX7h-9TowsKWkktxsNMBh13J30RXQAmlrpbDZXUAnxj46rF1vCAFuel_WajK70C2b_TtS3yTfi4RCjs8KeNMQsPTFmmxQnJs4LNl5VWBDAHnpJjamh_G7WShGXr3oaJfjVQQMxHt6DDX812Q0gkvHCzSQ8vb5AnwysoX8lnyyIHA5CqWFfmEBHT7GR27srY9VzM4KL4buyss7PRUAutdzao5zZW2Dz3MKab7rAt85ZTo9HOvUe119zZ0628VHzotJ8if02hI-6lGn5VepaBSKVCaxtj-eZJK-UDto1AFrJqXUG4FMYQ5cwiQ3N5UHYWf5GxtxISyMWLRrIhyA_yathvicYevhHsdvH5QWmThAP0K0jL54TljuioLj0gkOPFk5f0J4Q6aCyAA2LQRUEM7txqSn4UnS6VMOIqgeCE_iheEouDmzdG8YCUW8iWuza1F1jzexzlhOPlKTHrP7sJHM__5ewDUf_vWnKYbe_WywwY7lrxVom-9PtJn9wKzkecCA4wmwvH1s179j7PdUEycbTJca02tnqdGivJIwOwS1EDPlXMriVb2nNpgsYVe_tLSdb3oadetHpfkKxiU9ROTHIt9_gdkbh63wuqstNZYJDU0No3gdm0ruDCvQVc5vj-CBkWRTCdNzbHYJVXkTWhTef1-IkBysBh3FqAaAziDakszPGA3V8laPYkqhVeZ8Iiq9gw_G6jcqvN-8BW23xNp29LwW6AanL63i_zATj_qM0QpG9jWTe08b5CHNzL_98UzKsO1ovyk2oOnWUPyK-nIpUEuR34CmZlc_-ciLZTGehjMOleAahX6IJcNgfla-9XRZaC-ukTOodqMlWKO2_bUxO08HI1hBDsFTaaock3aGGnQsHJsK-ON7LCArUiuXB9lMv6_pX0RGHXDMD88S9ORDMyv1OvxZPyw9dMas2nTUdBZSwLMPimrUlVrYgSsUkeIajAmIEZDNk4eq7depYuc2Ut39A9F1EtKrTC1lvcb52rXduxx-YkjU5IF2qSvNimAOovJUMTKXh9XZWuuG_5chp-qwN4aEPL3GqyY1LGtYtbBy6XEk-IPUckDBMnFzziMYO9xceQC7zFPGD9UDQyNrANvAARYxffSinX3TE74F-6NwZaGEKXzFOPFZJ9al_lOj-NNN8XLCJp1qMqBBYMwjO_GRiptXxTst-4HwTW9GWlng6b5HQ05ZXdZ0CW0dV83ZCi4Y_WAkAD8_3C-WpzG-3p6jO6bryO4F6qXMmtE7c3PdKSrCy2Fpn8MqXrHCA0u6STfipHm2yNxFpvQ8e0BMRykBGIAd90t2E75Gie3gDVe1rSRm-74dA3oL8VTA_juSu0CgmBLIhv3G0meDmEBUj8bwYlkqTI9eExuEIvz-eLCr1tEJf_Xb35PL5EOHsJbit0Jyc8RifdO0rjOwuMvBudECi9KNE4rwGk5zMOO4CUMWOTClotIzMElpjp3Hrjwp_aNmEy2L1OLqQgMSyH3YO4Cs0Me0uZx-pzjbgX-gf-g5R6OgLowEgTvehelVmB0JHvoMVbSs-uNg_N9HKgA4FakIpNlmtKwQMqxU4ZxxaIE983QJ_ZuRudw3Q0ZSjdDgrFOY4Qvkvh-KbRwhUIbzRTf35x2e2IJXGv8oPACfXBJXHDFQd2q8gYgVdGG_Qq_gcJTAHssFHUN_zGnxzJNXrfwyZGp-23ZYESfhYRFfr37UpYxAyHAUMX-FeGVDwy3M1booU8m0EK5RLqdj6jCFX-fbFm9rh7SoAX-Q6UanZ2n4dyLmGTzV3ma37K5HomJU6zwRBQdHLx5kaPCOn1AnbQscB-5yuDtiUNg9o5pwUt6qiSw39iKyVfAWSjEKziza6XMbxYDpK-3Tbw7k0LwcUEBVUjqB27OyxlO79a81L22UQrBCq11YY15hCXmzEz3_bG9uvKmuu_oKpI2uryHUgdNVZMxHlYD0PfoHFu4Ja_mJS-Wqf6IpszcvHufazTy6Sfds_CQS26aysKcp1tfucmr1vJkCleA4ksqhq3PJ8HxKcp--J9rY1Yi1xDAWFLY4_pBkCYRViaUuxTWafmlTXfqwAWn50CupT_6_WoUglgvfoSTB563cBp6ImrRVD_uaz9qk1SToQkP35UpFtjrxCjexN3SO0m0cJuFD6RoUsYA2oA2-0EJiCt9dfLPnBszR5KrvnsdBGeWB7PDC2pTzhm_f45eK2xn3PZGfBhnnvZ0sKqKr2Jp5cAB-ATcpb1EWsIrqfUXRHPKc5_sOdpgeY5APM-WlzU-vZ86BYtPBfke8qJq2zWqHAZlguJYV2IEX3clRx3yF5OWRgIVD1Tzi76WBVFl0huwcVzR9kKlSCxRSZCMzSST__TqlDITGtsvtVMxUkqfJO6ONSbBRTTnxECwQ6U9Qxe1DQ4_AJbr0hOCakNpQS8UcOdf7UWs6Kt7aWjb5tD5KxA8QQA44o6x4TzNzXuY30qQk0Jx1MdRd1sAtQAzVumltNI8bUCfLG8y7tzvyqXMJGty77nUa2DII-Ny_2IMtb6d11DcGjS2-Kzg5q-hlmr2AbsyEWC8gR0Ox-lkXkDS3bmy9wrCSNRVSFUrcD2TgsXIPWHFn1BBwfN5LGCLEDLYJXD__3lwnTiHOhtmQ37arFCX9G57co5",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Evaluating session-api issues**\n\nI\u2019m looking into the session-api\u2019s correct service as a potential root cause due to incorrect resolver settings. There\u2019s an edge link type DNS issue, with propagation errors causing session route failures and showing metrics with a 9% error rate. Currently, the session-api appears healthy. Checking historical DNS lookup failures is good, with no current issues. Logs show timeout resolver cache changes, suggesting further investigation might not be needed. I should present clear data and citations without suggesting unsupported actions."
+       },
+       {
+        "type": "summary_text",
+        "text": "**Analyzing service claims**\n\nI\u2019m reviewing a claims list to connect services and identify issues. There\u2019s a link between edge and session failures, possibly due to DNS problems. The session-api is showing a 9% error rate, consistent with the edge-gw. Notably, errors peaked from 14:02:15 to 14:03:45, disappearing by 14:04, right after a migration at 14:01:55. \n\nI\u2019ll need to present actions clearly in JSON format, especially regarding the session-api. The recommendation is to maintain the rollback and monitor, ensuring no further changes are applied."
+       }
+      ]
+     },
+     {
+      "id": "msg_067ae0b7d3572ab1006aee3c5f22b087d28ddfd5772bd773ef",
+      "type": "message",
+      "status": "completed",
+      "content": [
+       {
+        "type": "output_text",
+        "annotations": [],
+        "logprobs": [],
+        "text": "## Diagnosis\n\nThe incident was caused by the `session-api` DNS-migration resolver settings for `meta-index`. After the migration began at 14:01:55, `session-api` logged meta-index request timeouts associated with a resolver-cache generation change; its error rate and `edge-gw`\u2019s error rate both reached 9%. The change log records a resolver-settings rollback at 14:03:50. By 14:04:00, both services\u2019 reported error rates were back to 0% and remained there through 14:05:00. (s2, s3, s7, s8)\n\n`meta-index` itself remained healthy, with 0% errors, and the current session-api-to-meta-index DNS and connection checks are clean. That supports a caller-side resolver configuration problem, not a meta-index outage. (s10\u2013s15)\n\n## What to do now\n\n**Make no further config change. Keep the resolver rollback in effect and do not reapply the DNS migration.** The rollback is already recorded, and the latest metrics show recovery; monitor the session-api and edge-gw error rates for recurrence. (s2, s3, s7)\n\n```json\n{\"root_cause_service\":\"session-api\",\"mechanism\":\"The session-api DNS-migration resolver settings for meta-index caused resolver-cache-related dial timeouts; those session-api errors propagated to edge-gw. The resolver rollback is recorded, and the latest observed error rates are 0%.\",\"actions\":[\"Keep the resolver rollback in effect; do not reapply the DNS migration. The rollback is already recorded at 14:03:50.\",\"Monitor session-api and edge-gw error rates for recurrence; no further remediation is indicated by the 14:05:00 metrics.\"],\"claims\":[{\"kind\":\"state\",\"service\":\"edge-gw\",\"state\":\"healthy\",\"evidence\":[\"s3\"]},{\"kind\":\"state\",\"service\":\"session-api\",\"state\":\"healthy\",\"evidence\":[\"s7\",\"s9\"]},{\"kind\":\"state\",\"service\":\"meta-index\",\"state\":\"healthy\",\"evidence\":[\"s10\",\"s12\"]},{\"kind\":\"edge\",\"src\":\"edge-gw\",\"dst\":\"session-api\",\"type\":\"failure\",\"evidence\":[\"s3\",\"s5\",\"s7\"]},{\"kind\":\"edge\",\"src\":\"session-api\",\"dst\":\"meta-index\",\"type\":\"dns\",\"evidence\":[\"s2\",\"s8\",\"s13\"]},{\"kind\":\"cause\",\"service\":\"session-api\",\"evidence\":[\"s2\",\"s8\",\"s13\"]}]}\n```"
+       }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_067ae0b7d3572ab1006aee3c4cd5e887d2b37acaccbea984b2",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Resolve a dependency's service name from one service's pods (last 60 s): the record returned, and the share of lookups that fail (NXDOMAIN / stale address).",
+      "name": "resolve_dns",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "TLS / mTLS handshake check from one service to one of its dependencies (last 60 s): certificate subjects, expiry and the share of handshakes that fail.",
+      "name": "check_tls",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Sidecar proxy stats for one service's route to a dependency (last 60 s): requests, upstream timeout share, latency the proxy path adds, connect failures and TCP retransmits.",
+      "name": "get_proxy_stats",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 4230,
+     "input_tokens_details": {
+      "cache_write_tokens": 1028,
+      "cached_tokens": 3199
+     },
+     "output_tokens": 1479,
+     "output_tokens_details": {
+      "reasoning_tokens": 950
+     },
+     "total_tokens": 5709
+    },
+    "user": null,
+    "metadata": {}
+   }
+  }
+ ],
+ "steps": [
+  {
+   "id": "s1",
+   "exchange": 0,
+   "tool": "list_services",
+   "args": {
+    "reason": "Identify the Larkwave services available for investigating the listener error page."
+   },
+   "reason": "Identify the Larkwave services available for investigating the listener error page.",
+   "reasoning_summary": [
+    "**Inspecting changes and services**\n\nI think we need to inspect things closely. I should start by making a list of the services and changes involved, and it could be helpful to do this in parallel. That way, I can keep track of everything efficiently. It\u2019s essential to ensure I don\u2019t overlook any details, so getting everything organized is crucial. Let\u2019s see how best to approach this to keep it simple and clear for effective evaluation!"
+   ],
+   "output": "edge-gw\nsession-api\ndocstore\nmeta-index\nnotify-relay\nplayer-core\nmedia-cache\nvela-origin\nkorra-origin\nbrio-origin\nclip-preview\nclipstream-origin",
+   "observed": {
+    "services": [
+     "edge-gw",
+     "session-api",
+     "docstore",
+     "meta-index",
+     "notify-relay",
+     "player-core",
+     "media-cache",
+     "vela-origin",
+     "korra-origin",
+     "brio-origin",
+     "clip-preview",
+     "clipstream-origin"
+    ]
+   }
+  },
+  {
+   "id": "s2",
+   "exchange": 1,
+   "tool": "get_changes",
+   "args": {
+    "reason": "Check recent deploys, changes, and alerts that could explain the incident."
+   },
+   "reason": "Check recent deploys, changes, and alerts that could explain the incident.",
+   "reasoning_summary": [],
+   "output": "14:01:48   notify-relay      deploy  Routine msg-cleanup rollout completed; delivery success and queue depth are within normal range.\n14:01:55   session-api       infra   DNS migration begins for the meta-index service name.\n14:02:25   edge-gw           alert   Session request 5xx rate is above its usual baseline.\n14:02:38   notify-relay      alert   Chatline 429 responses briefly increased; global request rate remains near quota.\n14:03:50   session-api       config  Rolled back dns-migration resolver settings; session request failures are declining.",
+   "observed": {
+    "events": [
+     [
+      108,
+      "notify-relay",
+      "deploy",
+      "Routine msg-cleanup rollout completed; delivery success and queue depth are within normal range."
+     ],
+     [
+      115,
+      "session-api",
+      "infra",
+      "DNS migration begins for the meta-index service name."
+     ],
+     [
+      145,
+      "edge-gw",
+      "alert",
+      "Session request 5xx rate is above its usual baseline."
+     ],
+     [
+      158,
+      "notify-relay",
+      "alert",
+      "Chatline 429 responses briefly increased; global request rate remains near quota."
+     ],
+     [
+      230,
+      "session-api",
+      "config",
+      "Rolled back dns-migration resolver settings; session request failures are declining."
+     ]
+    ]
+   }
+  },
+  {
+   "id": "s3",
+   "exchange": 1,
+   "tool": "get_metrics",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Check the listener-facing gateway's request errors and latency since the page."
+   },
+   "reason": "Check the listener-facing gateway's request errors and latency since the page.",
+   "reasoning_summary": [],
+   "output": "edge-gw (time, req/s, p99, err)\n14:01:00  req/s=   193  p99=   264ms  err=  0%\n14:01:15  req/s=   194  p99=   262ms  err=  0%\n14:01:30  req/s=   199  p99=   265ms  err=  0%\n14:01:45  req/s=   188  p99=   259ms  err=  0%\n14:02:00  req/s=   196  p99=   259ms  err=  0%\n14:02:15  req/s=   212  p99=   276ms  err=  9%\n14:02:30  req/s=   207  p99=   273ms  err=  9%\n14:02:45  req/s=   194  p99=   265ms  err=  9%\n14:03:00  req/s=   205  p99=   268ms  err=  9%\n14:03:15  req/s=   197  p99=   263ms  err=  9%\n14:03:30  req/s=   222  p99=   277ms  err=  9%\n14:03:45  req/s=   214  p99=   276ms  err=  9%\n14:04:00  req/s=   192  p99=   259ms  err=  0%\n14:04:15  req/s=   193  p99=   265ms  err=  0%\n14:04:30  req/s=   190  p99=   260ms  err=  0%\n14:04:45  req/s=   196  p99=   267ms  err=  0%\n14:05:00  req/s=   201  p99=   267ms  err=  0%",
+   "observed": {
+    "service": "edge-gw",
+    "series": [
+     {
+      "t": 60,
+      "rps": 192.57104915232063,
+      "lat_ms": 263.6410357716426,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 194.04443889964477,
+      "lat_ms": 261.82432725332774,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 199.0565447381061,
+      "lat_ms": 264.76052616156153,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 187.7624543756055,
+      "lat_ms": 259.4353377705883,
+      "err": 0.0
+     },
+     {
+      "t": 120,
+      "rps": 195.52933036956415,
+      "lat_ms": 258.8054682654912,
+      "err": 0.0
+     },
+     {
+      "t": 135,
+      "rps": 212.09140037718794,
+      "lat_ms": 276.49202376359733,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 150,
+      "rps": 206.76404156728452,
+      "lat_ms": 272.9166397707203,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 165,
+      "rps": 194.4851685993413,
+      "lat_ms": 264.7788638220772,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 180,
+      "rps": 204.94554871765374,
+      "lat_ms": 267.8438571536574,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 195,
+      "rps": 197.37181216466126,
+      "lat_ms": 263.12487752606205,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 210,
+      "rps": 222.00379165783315,
+      "lat_ms": 276.9679385424729,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 225,
+      "rps": 214.27413727910226,
+      "lat_ms": 276.42341659046406,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 240,
+      "rps": 191.9248816320729,
+      "lat_ms": 259.0135399002424,
+      "err": 0.0
+     },
+     {
+      "t": 255,
+      "rps": 193.22040937733178,
+      "lat_ms": 265.28557964017625,
+      "err": 0.0
+     },
+     {
+      "t": 270,
+      "rps": 190.43010056819307,
+      "lat_ms": 259.5791077485613,
+      "err": 0.0
+     },
+     {
+      "t": 285,
+      "rps": 195.85421209410978,
+      "lat_ms": 267.26025138399564,
+      "err": 0.0
+     },
+     {
+      "t": 300,
+      "rps": 200.52584447654107,
+      "lat_ms": 266.50029458609,
+      "err": 0.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s4",
+   "exchange": 1,
+   "tool": "get_metrics",
+   "args": {
+    "service": "player-core",
+    "reason": "Check player-core's request errors and latency as a likely request-path service."
+   },
+   "reason": "Check player-core's request errors and latency as a likely request-path service.",
+   "reasoning_summary": [],
+   "output": "player-core (time, req/s, p99, err)\n14:01:00  req/s=   186  p99=   178ms  err=  0%\n14:01:15  req/s=   193  p99=   182ms  err=  0%\n14:01:30  req/s=   198  p99=   185ms  err=  0%\n14:01:45  req/s=   195  p99=   188ms  err=  0%\n14:02:00  req/s=   199  p99=   185ms  err=  0%\n14:02:15  req/s=   209  p99=   192ms  err=  0%\n14:02:30  req/s=   203  p99=   188ms  err=  0%\n14:02:45  req/s=   197  p99=   188ms  err=  0%\n14:03:00  req/s=   207  p99=   191ms  err=  0%\n14:03:15  req/s=   192  p99=   180ms  err=  0%\n14:03:30  req/s=   221  p99=   197ms  err=  0%\n14:03:45  req/s=   204  p99=   186ms  err=  0%\n14:04:00  req/s=   196  p99=   185ms  err=  0%\n14:04:15  req/s=   183  p99=   176ms  err=  0%\n14:04:30  req/s=   189  p99=   180ms  err=  0%\n14:04:45  req/s=   199  p99=   190ms  err=  0%\n14:05:00  req/s=   204  p99=   190ms  err=  0%",
+   "observed": {
+    "service": "player-core",
+    "series": [
+     {
+      "t": 60,
+      "rps": 185.7836101772489,
+      "lat_ms": 177.6418563524752,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 193.08204728356432,
+      "lat_ms": 182.38990302663186,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 198.34868354105376,
+      "lat_ms": 185.1636821092346,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 195.41322621060667,
+      "lat_ms": 188.30930465557253,
+      "err": 0.0
+     },
+     {
+      "t": 120,
+      "rps": 198.52352906291154,
+      "lat_ms": 184.7806310319673,
+      "err": 0.0
+     },
+     {
+      "t": 135,
+      "rps": 208.61602000199247,
+      "lat_ms": 191.81892214887168,
+      "err": 0.0
+     },
+     {
+      "t": 150,
+      "rps": 202.84420763803175,
+      "lat_ms": 188.3778348627684,
+      "err": 0.0
+     },
+     {
+      "t": 165,
+      "rps": 197.46911188470625,
+      "lat_ms": 188.12114180178594,
+      "err": 0.0
+     },
+     {
+      "t": 180,
+      "rps": 207.0454231675064,
+      "lat_ms": 190.75296288702341,
+      "err": 0.0
+     },
+     {
+      "t": 195,
+      "rps": 191.798575117229,
+      "lat_ms": 179.56815374969793,
+      "err": 0.0
+     },
+     {
+      "t": 210,
+      "rps": 221.05391791900166,
+      "lat_ms": 196.5902906620482,
+      "err": 0.0
+     },
+     {
+      "t": 225,
+      "rps": 203.55683030722736,
+      "lat_ms": 185.62924176194676,
+      "err": 0.0
+     },
+     {
+      "t": 240,
+      "rps": 196.22188596186572,
+      "lat_ms": 185.38506583110328,
+      "err": 0.0
+     },
+     {
+      "t": 255,
+      "rps": 183.4781791210858,
+      "lat_ms": 175.85977300123142,
+      "err": 0.0
+     },
+     {
+      "t": 270,
+      "rps": 189.31567621989086,
+      "lat_ms": 180.359134963832,
+      "err": 0.0
+     },
+     {
+      "t": 285,
+      "rps": 198.78756429053627,
+      "lat_ms": 189.55396098452258,
+      "err": 0.0
+     },
+     {
+      "t": 300,
+      "rps": 203.64474008711113,
+      "lat_ms": 189.9828822408652,
+      "err": 0.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s5",
+   "exchange": 2,
+   "tool": "get_dependencies",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Trace the gateway's configured request path to locate which downstream service can produce listener errors."
+   },
+   "reason": "Trace the gateway's configured request path to locate which downstream service can produce listener errors.",
+   "reasoning_summary": [
+    "**Investigating page issues**\n\nIt seems like there might have been an issue that has resolved itself? The changes involved a DNS migration and a rollback of the meta-index, leading to a decline in failures. I need to investigate the dependencies of the edge gateway and session API. Checking the session API's dependencies, metrics, logs, and overall health is also crucial. Gathering those edge dependencies and session metrics should be my next step, as well as reviewing logs for further insights."
+   ],
+   "output": "edge-gw -> session-api (all required per request); timeout 3000ms, retries 0",
+   "observed": {
+    "service": "edge-gw",
+    "deps": [
+     "session-api"
+    ]
+   }
+  },
+  {
+   "id": "s6",
+   "exchange": 2,
+   "tool": "get_dependencies",
+   "args": {
+    "service": "session-api",
+    "reason": "Inspect session-api's downstream dependencies after the DNS migration and rollback."
+   },
+   "reason": "Inspect session-api's downstream dependencies after the DNS migration and rollback.",
+   "reasoning_summary": [],
+   "output": "session-api -> docstore, meta-index, notify-relay, player-core (all required per request); timeout 1500ms, retries 1",
+   "observed": {
+    "service": "session-api",
+    "deps": [
+     "docstore",
+     "meta-index",
+     "notify-relay",
+     "player-core"
+    ]
+   }
+  },
+  {
+   "id": "s7",
+   "exchange": 2,
+   "tool": "get_metrics",
+   "args": {
+    "service": "session-api",
+    "reason": "Confirm whether session-api request failures persisted after its resolver rollback."
+   },
+   "reason": "Confirm whether session-api request failures persisted after its resolver rollback.",
+   "reasoning_summary": [],
+   "output": "session-api (time, req/s, p99, err)\n14:01:00  req/s=   190  p99=   254ms  err=  0%\n14:01:15  req/s=   189  p99=   250ms  err=  0%\n14:01:30  req/s=   202  p99=   263ms  err=  0%\n14:01:45  req/s=   185  p99=   250ms  err=  0%\n14:02:00  req/s=   200  p99=   260ms  err=  9%\n14:02:15  req/s=   206  p99=   264ms  err=  9%\n14:02:30  req/s=   195  p99=   252ms  err=  9%\n14:02:45  req/s=   186  p99=   248ms  err=  9%\n14:03:00  req/s=   204  p99=   262ms  err=  9%\n14:03:15  req/s=   203  p99=   265ms  err=  9%\n14:03:30  req/s=   227  p99=   278ms  err=  9%\n14:03:45  req/s=   211  p99=   267ms  err=  9%\n14:04:00  req/s=   197  p99=   261ms  err=  0%\n14:04:15  req/s=   190  p99=   255ms  err=  0%\n14:04:30  req/s=   187  p99=   250ms  err=  0%\n14:04:45  req/s=   192  p99=   257ms  err=  0%\n14:05:00  req/s=   204  p99=   266ms  err=  0%",
+   "observed": {
+    "service": "session-api",
+    "series": [
+     {
+      "t": 60,
+      "rps": 189.58147643627646,
+      "lat_ms": 254.37865292794427,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 189.3487836853468,
+      "lat_ms": 250.44000656782484,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 201.8149416387265,
+      "lat_ms": 263.1697630516645,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 184.6831546230325,
+      "lat_ms": 250.07399063553217,
+      "err": 0.0
+     },
+     {
+      "t": 120,
+      "rps": 200.4215686738028,
+      "lat_ms": 260.0880973312641,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 135,
+      "rps": 206.2290497367594,
+      "lat_ms": 263.6386864405449,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 150,
+      "rps": 194.69230456066697,
+      "lat_ms": 251.9610122035068,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 165,
+      "rps": 186.15375169860783,
+      "lat_ms": 248.3941217246892,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 180,
+      "rps": 204.0711895148015,
+      "lat_ms": 261.5231640937215,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 195,
+      "rps": 202.77502102637936,
+      "lat_ms": 265.0133687604806,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 210,
+      "rps": 227.2455779940831,
+      "lat_ms": 278.20267851124044,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 225,
+      "rps": 210.71573339367188,
+      "lat_ms": 266.60298754920535,
+      "err": 0.09000000000000008
+     },
+     {
+      "t": 240,
+      "rps": 196.99183902113617,
+      "lat_ms": 260.59787694507844,
+      "err": 0.0
+     },
+     {
+      "t": 255,
+      "rps": 189.77166530140175,
+      "lat_ms": 255.3533813856445,
+      "err": 0.0
+     },
+     {
+      "t": 270,
+      "rps": 186.9189484316998,
+      "lat_ms": 249.7299174361404,
+      "err": 0.0
+     },
+     {
+      "t": 285,
+      "rps": 192.18376200500833,
+      "lat_ms": 257.03731620618277,
+      "err": 0.0
+     },
+     {
+      "t": 300,
+      "rps": 204.4035337858258,
+      "lat_ms": 266.3335722481722,
+      "err": 0.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s8",
+   "exchange": 2,
+   "tool": "get_logs",
+   "args": {
+    "service": "session-api",
+    "reason": "Inspect session-api error samples since 14:00 for the specific failure mechanism."
+   },
+   "reason": "Inspect session-api error samples since 14:00 for the specific failure mechanism.",
+   "reasoning_summary": [],
+   "output": "session-api: 1980 error lines, sample: 'WARN meta-index request failed after retry: dial tcp: i/o timeout (resolver cache generation changed)'",
+   "observed": {
+    "service": "session-api",
+    "count": 1980,
+    "message": "WARN meta-index request failed after retry: dial tcp: i/o timeout (resolver cache generation changed)"
+   }
+  },
+  {
+   "id": "s9",
+   "exchange": 2,
+   "tool": "check_health",
+   "args": {
+    "service": "session-api",
+    "reason": "Check whether session-api's own process is unhealthy or whether observed errors are dependency-related."
+   },
+   "reason": "Check whether session-api's own process is unhealthy or whether observed errors are dependency-related.",
+   "reasoning_summary": [],
+   "output": "session-api: HEALTHY  own_error_rate=0%  utilisation=6%  queue_wait=0.0s  pods ready",
+   "observed": {
+    "service": "session-api",
+    "status": "healthy",
+    "own_err": 0.0,
+    "util": 0.06108498233155179,
+    "wait_s": 0.0
+   }
+  },
+  {
+   "id": "s10",
+   "exchange": 3,
+   "tool": "get_metrics",
+   "args": {
+    "service": "meta-index",
+    "reason": "Check whether meta-index itself is returning errors or slowing session requests during the incident."
+   },
+   "reason": "Check whether meta-index itself is returning errors or slowing session requests during the incident.",
+   "reasoning_summary": [
+    "**Investigating DNS issues**\n\nIt seems there might be a DNS issue that has since resolved or improved after a rollback. The user is asking for specific actions to restore, so I should inspect the meta-index logs and metrics related to DNS. I also find it interesting to note a dial timeout error, possibly related to DNS migration. I\u2019ll need to differentiate between stale IP and network issues, checking those relevant metrics and logs, along with connectivity and proxy stats."
+   ],
+   "output": "meta-index (time, req/s, p99, err)\n14:01:00  req/s=   192  p99=    33ms  err=  0%\n14:01:15  req/s=   202  p99=    34ms  err=  0%\n14:01:30  req/s=   199  p99=    33ms  err=  0%\n14:01:45  req/s=   180  p99=    32ms  err=  0%\n14:02:00  req/s=   181  p99=    33ms  err=  0%\n14:02:15  req/s=   191  p99=    34ms  err=  0%\n14:02:30  req/s=   176  p99=    32ms  err=  0%\n14:02:45  req/s=   172  p99=    32ms  err=  0%\n14:03:00  req/s=   180  p99=    32ms  err=  0%\n14:03:15  req/s=   179  p99=    33ms  err=  0%\n14:03:30  req/s=   200  p99=    33ms  err=  0%\n14:03:45  req/s=   192  p99=    33ms  err=  0%\n14:04:00  req/s=   198  p99=    34ms  err=  0%\n14:04:15  req/s=   182  p99=    32ms  err=  0%\n14:04:30  req/s=   197  p99=    34ms  err=  0%\n14:04:45  req/s=   189  p99=    33ms  err=  0%\n14:05:00  req/s=   202  p99=    34ms  err=  0%",
+   "observed": {
+    "service": "meta-index",
+    "series": [
+     {
+      "t": 60,
+      "rps": 191.6000025580679,
+      "lat_ms": 33.32877837972295,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 202.0720647022932,
+      "lat_ms": 34.4233419992995,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 198.6135689116078,
+      "lat_ms": 33.12589793548394,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 179.85432117391366,
+      "lat_ms": 31.69483585924523,
+      "err": 0.0
+     },
+     {
+      "t": 120,
+      "rps": 181.00941608743338,
+      "lat_ms": 32.66716943589632,
+      "err": 0.0
+     },
+     {
+      "t": 135,
+      "rps": 191.11212473491253,
+      "lat_ms": 33.68864267300579,
+      "err": 0.0
+     },
+     {
+      "t": 150,
+      "rps": 175.99045448870348,
+      "lat_ms": 31.62701325278544,
+      "err": 0.0
+     },
+     {
+      "t": 165,
+      "rps": 172.48654187641185,
+      "lat_ms": 32.455835212770424,
+      "err": 0.0
+     },
+     {
+      "t": 180,
+      "rps": 180.41701396551326,
+      "lat_ms": 31.928165640786062,
+      "err": 0.0
+     },
+     {
+      "t": 195,
+      "rps": 178.7778179029745,
+      "lat_ms": 32.61594073748809,
+      "err": 0.0
+     },
+     {
+      "t": 210,
+      "rps": 200.3556654290911,
+      "lat_ms": 32.801786336296786,
+      "err": 0.0
+     },
+     {
+      "t": 225,
+      "rps": 192.4073827964083,
+      "lat_ms": 33.35408538295037,
+      "err": 0.0
+     },
+     {
+      "t": 240,
+      "rps": 198.38204562116292,
+      "lat_ms": 33.80407015022687,
+      "err": 0.0
+     },
+     {
+      "t": 255,
+      "rps": 182.45567267825976,
+      "lat_ms": 31.866753441733103,
+      "err": 0.0
+     },
+     {
+      "t": 270,
+      "rps": 196.77395157958293,
+      "lat_ms": 34.01726369398132,
+      "err": 0.0
+     },
+     {
+      "t": 285,
+      "rps": 188.84757106118607,
+      "lat_ms": 32.69725332204014,
+      "err": 0.0
+     },
+     {
+      "t": 300,
+      "rps": 202.1524172696859,
+      "lat_ms": 33.67557680389143,
+      "err": 0.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s11",
+   "exchange": 3,
+   "tool": "get_logs",
+   "args": {
+    "service": "meta-index",
+    "reason": "Look for matching meta-index-side failures that distinguish a service outage from caller DNS trouble."
+   },
+   "reason": "Look for matching meta-index-side failures that distinguish a service outage from caller DNS trouble.",
+   "reasoning_summary": [],
+   "output": "meta-index: no error log lines",
+   "observed": {
+    "service": "meta-index",
+    "count": 0,
+    "message": null
+   }
+  },
+  {
+   "id": "s12",
+   "exchange": 3,
+   "tool": "check_health",
+   "args": {
+    "service": "meta-index",
+    "reason": "Verify meta-index process health independently of session-api's dependency errors."
+   },
+   "reason": "Verify meta-index process health independently of session-api's dependency errors.",
+   "reasoning_summary": [],
+   "output": "meta-index: HEALTHY  own_error_rate=0%  utilisation=9%  queue_wait=0.0s  pods ready",
+   "observed": {
+    "service": "meta-index",
+    "status": "healthy",
+    "own_err": 0.0,
+    "util": 0.08836431055583384,
+    "wait_s": 0.0
+   }
+  },
+  {
+   "id": "s13",
+   "exchange": 3,
+   "tool": "resolve_dns",
+   "args": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "reason": "Test whether session-api's meta-index name resolution is still failing or returning stale addresses after rollback."
+   },
+   "reason": "Test whether session-api's meta-index name resolution is still failing or returning stale addresses after rollback.",
+   "reasoning_summary": [],
+   "output": "session-api -> meta-index.svc.larkwave: A 10.41.29.3 TTL 30, 0% lookup failures (last 60 s)",
+   "observed": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "mode": null,
+    "failing": 0.0,
+    "record": "10.41.29.3"
+   }
+  },
+  {
+   "id": "s14",
+   "exchange": 3,
+   "tool": "check_connectivity",
+   "args": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "reason": "Test direct connection refusal/reset rates from session-api to meta-index during the page."
+   },
+   "reason": "Test direct connection refusal/reset rates from session-api to meta-index during the page.",
+   "reasoning_summary": [],
+   "output": "session-api -> meta-index: TCP ok, 0% of connection attempts refused (last 60 s)",
+   "observed": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "refused": 0.0
+   }
+  },
+  {
+   "id": "s15",
+   "exchange": 3,
+   "tool": "get_proxy_stats",
+   "args": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "reason": "Check the session-api-to-meta-index proxy path for timeouts, connection failures, and transport loss."
+   },
+   "reason": "Check the session-api-to-meta-index proxy path for timeouts, connection failures, and transport loss.",
+   "reasoning_summary": [],
+   "output": "session-api -> meta-index sidecar (last 60 s): 199 req/s, upstream_rq_timeout 0% (timeout 1500ms), proxy-path added latency 0ms (upstream service time 33ms), connect failures 0%, TCP retransmits 0% of segments",
+   "observed": {
+    "src": "session-api",
+    "dst": "meta-index",
+    "mode": null,
+    "failing": 0.0,
+    "added_ms": 0.0,
+    "timeout_share": 0.0,
+    "retransmit": 0.0
+   }
+  }
+ ],
+ "model_reported": "gpt-6-luna",
+ "answer": "## Diagnosis\n\nThe incident was caused by the `session-api` DNS-migration resolver settings for `meta-index`. After the migration began at 14:01:55, `session-api` logged meta-index request timeouts associated with a resolver-cache generation change; its error rate and `edge-gw`\u2019s error rate both reached 9%. The change log records a resolver-settings rollback at 14:03:50. By 14:04:00, both services\u2019 reported error rates were back to 0% and remained there through 14:05:00. (s2, s3, s7, s8)\n\n`meta-index` itself remained healthy, with 0% errors, and the current session-api-to-meta-index DNS and connection checks are clean. That supports a caller-side resolver configuration problem, not a meta-index outage. (s10\u2013s15)\n\n## What to do now\n\n**Make no further config change. Keep the resolver rollback in effect and do not reapply the DNS migration.** The rollback is already recorded, and the latest metrics show recovery; monitor the session-api and edge-gw error rates for recurrence. (s2, s3, s7)\n\n```json\n{\"root_cause_service\":\"session-api\",\"mechanism\":\"The session-api DNS-migration resolver settings for meta-index caused resolver-cache-related dial timeouts; those session-api errors propagated to edge-gw. The resolver rollback is recorded, and the latest observed error rates are 0%.\",\"actions\":[\"Keep the resolver rollback in effect; do not reapply the DNS migration. The rollback is already recorded at 14:03:50.\",\"Monitor session-api and edge-gw error rates for recurrence; no further remediation is indicated by the 14:05:00 metrics.\"],\"claims\":[{\"kind\":\"state\",\"service\":\"edge-gw\",\"state\":\"healthy\",\"evidence\":[\"s3\"]},{\"kind\":\"state\",\"service\":\"session-api\",\"state\":\"healthy\",\"evidence\":[\"s7\",\"s9\"]},{\"kind\":\"state\",\"service\":\"meta-index\",\"state\":\"healthy\",\"evidence\":[\"s10\",\"s12\"]},{\"kind\":\"edge\",\"src\":\"edge-gw\",\"dst\":\"session-api\",\"type\":\"failure\",\"evidence\":[\"s3\",\"s5\",\"s7\"]},{\"kind\":\"edge\",\"src\":\"session-api\",\"dst\":\"meta-index\",\"type\":\"dns\",\"evidence\":[\"s2\",\"s8\",\"s13\"]},{\"kind\":\"cause\",\"service\":\"session-api\",\"evidence\":[\"s2\",\"s8\",\"s13\"]}]}\n```",
+ "final_reasoning": [
+  "**Evaluating session-api issues**\n\nI\u2019m looking into the session-api\u2019s correct service as a potential root cause due to incorrect resolver settings. There\u2019s an edge link type DNS issue, with propagation errors causing session route failures and showing metrics with a 9% error rate. Currently, the session-api appears healthy. Checking historical DNS lookup failures is good, with no current issues. Logs show timeout resolver cache changes, suggesting further investigation might not be needed. I should present clear data and citations without suggesting unsupported actions.",
+  "**Analyzing service claims**\n\nI\u2019m reviewing a claims list to connect services and identify issues. There\u2019s a link between edge and session failures, possibly due to DNS problems. The session-api is showing a 9% error rate, consistent with the edge-gw. Notably, errors peaked from 14:02:15 to 14:03:45, disappearing by 14:04, right after a migration at 14:01:55. \n\nI\u2019ll need to present actions clearly in JSON format, especially regarding the session-api. The recommendation is to maintain the rollback and monitor, ensuring no further changes are applied."
+ ],
+ "finished_at_utc": "2026-11-06T20:45:22.402166+00:00",
+ "usage": [
+  {
+   "input_tokens": 987,
+   "input_tokens_details": {
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "output_tokens": 49,
+   "output_tokens_details": {
+    "reasoning_tokens": 16
+   },
+   "total_tokens": 1036
+  },
+  {
+   "input_tokens": 1090,
+   "input_tokens_details": {
+    "cache_write_tokens": 1087,
+    "cached_tokens": 0
+   },
+   "output_tokens": 114,
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "total_tokens": 1204
+  },
+  {
+   "input_tokens": 2315,
+   "input_tokens_details": {
+    "cache_write_tokens": 1225,
+    "cached_tokens": 1087
+   },
+   "output_tokens": 242,
+   "output_tokens_details": {
+    "reasoning_tokens": 54
+   },
+   "total_tokens": 2557
+  },
+  {
+   "input_tokens": 3202,
+   "input_tokens_details": {
+    "cache_write_tokens": 887,
+    "cached_tokens": 2312
+   },
+   "output_tokens": 327,
+   "output_tokens_details": {
+    "reasoning_tokens": 79
+   },
+   "total_tokens": 3529
+  },
+  {
+   "input_tokens": 4230,
+   "input_tokens_details": {
+    "cache_write_tokens": 1028,
+    "cached_tokens": 3199
+   },
+   "output_tokens": 1479,
+   "output_tokens_details": {
+    "reasoning_tokens": 950
+   },
+   "total_tokens": 5709
+  }
+ ]
+}

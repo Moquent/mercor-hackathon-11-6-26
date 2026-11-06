@@ -76,8 +76,10 @@ class RegressionTest(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="rp-regress-")
         copy = os.path.join(cls.tmp, "repo")
         shutil.copytree(REPO, copy, ignore=SKIP)
+        cls.cache_before = read_json(os.path.join(copy, "results", "jev_cache.json"))
         cmd = shlex.split(os.environ.get("RP_EVAL_CMD", DEFAULT_CMD))
-        proc = subprocess.run(cmd, cwd=copy, capture_output=True, text=True, timeout=900)
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENAI", "OPENAI_API_KEY", "TYPESAFE", "TYPESAFE_API_KEY")}
+        proc = subprocess.run(cmd, cwd=copy, env=env, capture_output=True, text=True, timeout=900)
         cls.proc = proc
         cls.copy = copy
 
@@ -101,9 +103,8 @@ class RegressionTest(unittest.TestCase):
             self.assertEqual(actual.get(path), digest, f"prompt changed: {path}")
 
     def test_no_new_jev_calls_without_keys(self):
-        cache_before = read_json(os.path.join(REPO, "results", "jev_cache.json"))
         cache_after = read_json(os.path.join(self.copy, "results", "jev_cache.json"))
-        self.assertEqual(set(cache_before), set(cache_after), "evaluation needed Jev calls that are not cached")
+        self.assertEqual(set(self.cache_before), set(cache_after), "evaluation needed Jev calls that are not cached")
 
 
 if __name__ == "__main__":

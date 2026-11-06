@@ -8,6 +8,7 @@
     python3 -m rootproof prepare-rcaeval DIR build RCAEval packets from downloaded cases (needs pandas, pyarrow)
     python3 -m rootproof rcaeval-traces     per-edge call stats from the real RCAEval traces (needs pandas, pyarrow)
     python3 -m rootproof prompt ID           print the exact prompt for one incident
+    python3 -m rootproof mutate              plant verifier bugs one at a time and check tests/test_verifier.py catches them
 """
 import sys
 
@@ -41,6 +42,9 @@ def main(argv):
     if cmd == "rcaeval-traces":
         from .rcaeval.traces import aggregate_all
         return aggregate_all()
+    if cmd == "mutate":
+        from .mutation import main
+        return main()
     if cmd == "prompt":
         from .packets import prompt
         from .scenario.incidents import INCIDENTS

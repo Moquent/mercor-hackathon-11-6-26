@@ -20,5 +20,5 @@ RUNS = (1, 2, 3, 4, 5)   # official first attempt is run 1; the rest estimate ho
 SIM_T = 600                  # simulated seconds per replay
 PAGE_T = 300                 # the on-call is paged here; actions apply from here
 JUDGE_WINDOW = (450, 600)    # the SLO is judged over this window of the replay
-SLO_ERROR_RATE = 0.05        # resolved if the entry error rate stays below this
+SLO_ERROR_RATE = 0.05        # resolved if the mean entry error rate is below this
 JEV_THRESHOLD = 0.5          # Jev probability at which a catalog action or causal edge counts as claimed

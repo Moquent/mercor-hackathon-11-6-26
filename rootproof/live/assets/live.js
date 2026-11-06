@@ -472,7 +472,7 @@ function onClaim(ev) {
   const tr = h('tr', { onclick: () => { const ev0 = (ev.evidence || [])[0]; if (ev0 != null) highlightStep(sid(ev0)); flashTarget(tgt); } },
     h('td', { class: 'mono dim' }, ev.index ?? ''), h('td', { class: 'ct', title: ev.text || '' }, claimSummary(ev.claim) || short(ev.text, 70)),
     h('td', {}, yn(ev.grounded)), h('td', {}, yn(ev.supported)), h('td', {}, yn(ev.true)),
-    h('td', {}, h('span', { class: 'chip lbl-' + label }, label)), h('td', {}, ...(ev.evidence || []).map(stepChip)));
+    h('td', {}, h('span', { class: 'chip lbl-' + label, title: ev.decided_by || '' }, label)), h('td', {}, ...(ev.evidence || []).map(stepChip)));
   $('#claims').append(tr); tr.scrollIntoView({ block: 'nearest' });
   drawClaimOverlay(tgt, label, ev.claim);
 }
@@ -569,7 +569,7 @@ function onCaseReady(ev) {
   out.append(h('details', {}, h('summary', {}, 'case JSON'), h('pre', { class: 'out' }, JSON.stringify(c, null, 2))));
   toast('Case ready: ' + (c.id || ''));
 }
-function onCaseError(ev) { $('#case-out').append(h('div', { class: 'case-err' }, 'case error: ' + (ev.error || ev.msg || 'unknown'))); }
+function onCaseError(ev) { S.jobFailed = true; $('#case-out').append(h('div', { class: 'case-err' }, 'case error: ' + (ev.error || ev.msg || 'unknown'))); }
 async function investigateCase(c) {
   if (!c || !c.id) return;
   // a custom case: refresh catalog so it shows in the picker, then select it
@@ -610,9 +610,9 @@ const HANDLERS = {
   invariant: onInvariant, claim: onClaim, missed_check: onMissed, first_wrong: onFirstWrong, verdict: onVerdict,
   bench_row: onBenchRow, bench_totals: onBenchTotals,
   draft_text: onDraftText, case_ready: onCaseReady, case_error: onCaseError,
-  error: ev => toast(ev.msg || 'error', true),
+  error: ev => { S.jobFailed = true; toast(ev.msg || 'error', true); },
   log: ev => { if (ev.level === 'error') toast(ev.msg, true); },
-  done: () => finishJob('done'),
+  done: () => finishJob(S.jobFailed ? 'error' : 'done'),
 };
 function dispatch(ev) {
   logEvent(ev);
@@ -623,6 +623,7 @@ function setStatus(st) { S.status = st; const p = $('#pill'); p.textContent = st
 function setButtons(busy) { for (const id of ['btn-replay', 'btn-live', 'btn-verify', 'btn-bench', 'btn-draft']) $('#' + id).disabled = busy; }
 function finishJob(st) { if (S.es) { S.es.close(); S.es = null; } setStatus(st); if (S.cursorEl && st === 'done') S.cursorText && (S.cursorText.textContent = 'done'); }
 function resetRun(kind) {
+  S.jobFailed = false;
   S.steps = {}; S.inspected = {}; S.pendingReasoning = []; S.tokens = { in: 0, out: 0 }; S.latency = 0; S.nSteps = 0;
   if (kind !== 'bench' && kind !== 'draft') {
     streamEl().innerHTML = ''; updateStats(); resetVerify(); clearOverlays(); renderBadges();
@@ -642,7 +643,7 @@ async function startJob(url, body, kind) {
   if (!S.job) { setStatus('error'); toast('server returned no job id', true); return; }
   const es = new EventSource('/api/stream/' + encodeURIComponent(S.job)); S.es = es;
   es.onmessage = m => { let ev; try { ev = JSON.parse(m.data); } catch (e) { logLocal('warn', 'unparsable SSE data: ' + short(m.data, 120)); return; } dispatch(ev); };
-  es.onerror = () => { if (S.es === es && S.status === 'running') { es.close(); S.es = null; logLocal('warn', 'stream closed by server'); setStatus('done'); } };
+  es.onerror = () => { if (S.es === es && S.status === 'running') { es.close(); S.es = null; logLocal('error', 'stream disconnected before the job completed'); setStatus('error'); } };
 }
 setInterval(() => { if (S.status === 'running') $('#elapsed').textContent = ((performance.now() - S.jobStart) / 1000).toFixed(1) + 's'; }, 100);
 

@@ -63,6 +63,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/":
             path = "/index.html"
+        if path.startswith("/api/dag/"):
+            from ..dagscope.routes import handle_get
+            result = handle_get(path)
+            if result is not None:
+                return self._send(*result)
         if path == "/api/catalog":
             return self._send(200, catalog())
         if path.startswith("/api/sim/"):
@@ -106,6 +111,11 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, {"error": "bad json"})
         path = self.path.split("?")[0]
+        if path.startswith("/api/dag/"):
+            from ..dagscope.routes import handle_post
+            result = handle_post(path, body, bus)
+            if result is not None:
+                return self._send(*result)
         if path == "/api/replay":
             job = bus.start("replay", stream.job_replay, body["task"], int(body.get("run", 1)), float(body.get("speed", 1.0)))
         elif path == "/api/investigate":

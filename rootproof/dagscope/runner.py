@@ -12,6 +12,7 @@ to cases/dagscope/runs/live_<run_id>.json in the captured-run format.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -21,9 +22,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-GATEWAY = "http://localhost:8000"
-INVENTORY = "http://localhost:8002"
-VERIFIER = "http://localhost:8003"
+GATEWAY = os.environ.get("ROOTPROOF_GATEWAY_URL", "http://localhost:8000")
+INVENTORY = os.environ.get("ROOTPROOF_INVENTORY_URL", "http://localhost:8002")
+VERIFIER = os.environ.get("ROOTPROOF_VERIFIER_URL", "http://localhost:8003")
 RUNS_DIR = Path(__file__).resolve().parents[2] / "cases" / "dagscope" / "runs"
 NOT_RUNNING = "real stack not running: docker compose --profile realsystem up"
 
@@ -85,8 +86,8 @@ def _new_run(name: str) -> str:
 
 # Each scenario returns (main run id, [(intervention name, description, run id), ...]).
 
-def _scenario_1():
-    run = _new_run("s1")
+def _scenario_1(run=None):
+    run = run or _new_run("s1")
     a, b, c = _sku(), _sku(), _sku()
     for s in (a, b, c):
         _seed(s, 5)
@@ -113,8 +114,8 @@ def _scenario_1():
                  ("remove_fault_on_A", "Requests A and B overlap with B's warning, but no fault injected on A.", r2)]
 
 
-def _scenario_2():
-    run = _new_run("s2")
+def _scenario_2(run=None):
+    run = run or _new_run("s2")
     a, c = _sku(), _sku()
     _seed(a, 5)
     _seed(c, 5)
@@ -125,8 +126,8 @@ def _scenario_2():
     return run, []
 
 
-def _scenario_3():
-    run = _new_run("s3")
+def _scenario_3(run=None):
+    run = run or _new_run("s3")
     a, c = _sku(), _sku()
     _seed(a, 5)
     _seed(c, 5)
@@ -134,8 +135,8 @@ def _scenario_3():
     return run, []
 
 
-def _scenario_4():
-    run = _new_run("s4")
+def _scenario_4(run=None):
+    run = run or _new_run("s4")
     a, c = _sku(), _sku()
     _seed(a, 0)
     _seed(c, 5)
@@ -169,11 +170,12 @@ def _edge_key(d: dict) -> tuple:
     return (d["parent_event_id"], d["child_event_id"], d["dependency_type"])
 
 
-def poll_until_quiescent(run_id: str, emit=None, quiet_polls: int = 3, timeout_s: float = 60.0) -> dict:
+def poll_until_quiescent(run_id: str, emit=None, quiet_polls: int = 3, timeout_s: float = 60.0, producer_done=None) -> dict:
     """Poll once a second; stop after `quiet_polls` consecutive polls with nothing new (retries need ~1.5 s idle)."""
     seen_events, seen_edges, quiet, last = set(), set(), 0, None
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        finished = producer_done is None or producer_done()
         g = _graph(run_id)
         new = 0
         if g is not None:
@@ -190,13 +192,13 @@ def poll_until_quiescent(run_id: str, emit=None, quiet_polls: int = 3, timeout_s
                     new += 1
                     if emit:
                         emit("dag_edge", d)
-        quiet = quiet + 1 if (g is not None and new == 0) else 0
+        quiet = quiet + 1 if (g is not None and new == 0 and finished) else 0
         if quiet >= quiet_polls:
             return last
         time.sleep(1.0)
     if last is None:
         raise TimeoutError(f"run {run_id} recorded no events within {timeout_s}s")
-    return last  # best effort; coverage below is downgraded
+    raise TimeoutError(f"run {run_id} did not become quiescent within {timeout_s}s; completeness cannot be established")
 
 
 def build_manifest(events: list[dict]) -> dict[str, str]:
@@ -249,10 +251,30 @@ def run_scenario(scenario_id: str, emit=None) -> dict:
         raise ValueError(f"unknown scenario {scenario_id!r}; expected one of {sorted(SCENARIOS)}")
     if not healthy():
         raise RuntimeError(NOT_RUNNING)
-    run_id, interventions = SCENARIOS[scenario_id]()
+    run_id = _new_run("s" + scenario_id.rsplit("_", 1)[1])
     if emit:
         emit("run_started", {"scenario_id": scenario_id, "run_id": run_id})
-    g = poll_until_quiescent(run_id, emit)
+    done = threading.Event()
+    result = {}
+
+    def execute():
+        try:
+            _, result["interventions"] = SCENARIOS[scenario_id](run_id)
+        except Exception as exc:
+            result["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=execute, daemon=True)
+    worker.start()
+
+    def producer_done():
+        if "error" in result:
+            raise result["error"]
+        return done.is_set()
+
+    g = poll_until_quiescent(run_id, emit, producer_done=producer_done)
+    interventions = result["interventions"]
     valid = bool(g["integrity"].get("valid"))
     artifact = {
         "scenario_id": scenario_id, "run_id": run_id, "captured_at_utc": datetime.now(timezone.utc).isoformat(),

@@ -1,7 +1,7 @@
 # Ground truth
 
 Each simulated task is seeded, so the right answer is **computed**: every executable action in the catalog (singles, then
-pairs) is replayed from the page time (14:05:00). A set counts as a fix if the `edge-gw` error rate stays under
+pairs) is replayed from the page time (14:05:00). A set counts as a fix if the `edge-gw` mean error rate is under
 5% over 14:07:30–14:10:00. The rationale explains *why* in plain terms; the replay numbers are the proof.
 
 ## 01-vela-402 — Primary origin billing lapse -> fallback flood

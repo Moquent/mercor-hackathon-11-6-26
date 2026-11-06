@@ -107,7 +107,7 @@ def node_states(incident):
 def write_ground_truth(incidents, verdicts, truth):
     lines = ["# Ground truth", "",
              "Each simulated task is seeded, so the right answer is **computed**: every executable action in the catalog (singles, then",
-             f"pairs) is replayed from the page time ({clock(PAGE_T)}). A set counts as a fix if the `{ENTRY}` error rate stays under",
+             f"pairs) is replayed from the page time ({clock(PAGE_T)}). A set counts as a fix if the `{ENTRY}` mean error rate is under",
              f"{SLO_ERROR_RATE:.0%} over {clock(JUDGE_WINDOW[0])}–{clock(JUDGE_WINDOW[1])}. The rationale explains *why* in plain terms; "
              "the replay numbers are the proof.", ""]
     for inc in incidents:

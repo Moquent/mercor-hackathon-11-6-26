@@ -40,6 +40,7 @@ class Verdict:
 
     def to_dict(self):
         return {"task": self.task, "verdict": self.verdict, "fixed_in_replay": self.fixed_in_replay,
+                "evidence_class": "simulated_intervention",
                 "ai_error_rate_after": self.ai_error_rate_after, "extraction": self.extraction.to_dict(),
                 "invariants": [c.to_dict() for c in self.invariants], "certificates": self.certificates,
                 "incident_onset": self.incident_onset, "fixed_by_seed": self.fixed_by_seed,

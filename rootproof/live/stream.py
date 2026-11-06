@@ -2,6 +2,7 @@
 intermediate result as an event, in the order defined in EVENTS.md.
 """
 import json
+import math
 import os
 import re
 import time
@@ -90,7 +91,7 @@ def verify_streamed(job, incident, record):
     job.emit("stage", name="claims", status="start")
     for i, c in enumerate(tr["claims"]):
         job.emit("claim", index=i, text=c["text"], claim=c["claim"], grounded=c["grounded"], supported=c["supported"],
-                 label=c["label"], evidence=c["evidence"], commit_step=c["commit_step"], **{"true": c["true"]})
+                 label=c["label"], evidence=c["evidence"], decided_by=c.get("decided_by"), commit_step=c["commit_step"], **{"true": c["true"]})
         time.sleep(CLAIM_DELAY_S)
     job.emit("stage", name="claims", status="done")
 
@@ -205,7 +206,10 @@ Turn the description below into ONE incident as JSON. Use only these services an
 Fault fields: svc (a service), field ("err" own error share 0-1 | "capacity" req/s | "extra_rps" extra background load | "link"),
 value, start (seconds, 60-200; the on-call is paged at 300), end (optional), kind ("transient": cleared by restart |
 "config": cleared by rolling back `change` | "external": cleared by restoring the provider), change (one of: {changes}),
-and for field "link": link (a direct dependency of svc) and mode ("refuse" | "dns" | "tls" | "latency" (value = added ms) | "loss").
+and for field "link": link (a direct dependency of svc) and mode ("refuse" | "dns" | "tls" | "latency" | "loss").
+value must be a number: for refuse/dns/tls/loss, the fraction of calls that fail, from 0 to 1; for latency, added milliseconds;
+for err, the error fraction from 0 to 1; for capacity or extra_rps, requests per second. Never put an IP address in value;
+an address belongs in the logs or event description. Capacity must be greater than zero.
 Write events (deploys, config changes, alerts, including one plausible red herring) and the error log line each affected service
 would print. Keep it subtle: logs show symptoms, not the answer.
 
@@ -228,7 +232,14 @@ def _validate(d):
     allowed = {f.name for f in fields(Fault)}
     problems = []
     faults = []
+    if not isinstance(d, dict):
+        return {"faults": []}, ["the draft must be a JSON object"]
+    if not isinstance(d.get("faults"), list):
+        return {"faults": []}, ["faults must be a list"]
     for i, f in enumerate(d.get("faults") or []):
+        if not isinstance(f, dict):
+            problems.append(f"fault {i + 1} must be an object")
+            continue
         f = {k: v for k, v in f.items() if k in allowed}
         f.setdefault("id", f"F{i + 1}")
         if f.get("svc") not in topo:
@@ -239,22 +250,52 @@ def _validate(d):
                 problems.append(f"{f['svc']} has no dependency {f.get('link')}")
                 continue
             f["field"] = "link"
+            if f.get("mode", "refuse") not in ("refuse", "dns", "tls", "latency", "loss"):
+                problems.append(f"unsupported link mode {f.get('mode')}")
+                continue
         elif f.get("field") not in ("err", "capacity", "extra_rps"):
             problems.append(f"unsupported field {f.get('field')}")
             continue
         if not f.get("link"):
             f.pop("mode", None)
             f.pop("link", None)
-        f["value"] = float(f["value"])
-        f["start"] = int(min(250, max(30, int(f.get("start", 120)))))
-        if f.get("end") is None:
-            f.pop("end", None)
+        try:
+            if isinstance(f.get("value"), bool):
+                raise ValueError()
+            value = float(f["value"])
+            if not math.isfinite(value) or value < 0 or (f["field"] == "capacity" and value == 0):
+                raise ValueError()
+            if (f["field"] == "err" or f.get("link") and f.get("mode", "refuse") != "latency") and value > 1:
+                raise ValueError()
+            f["value"] = value
+            f["start"] = int(f.get("start", 120))
+            if not 30 <= f["start"] <= 250:
+                raise ValueError()
+            if f.get("end") is None:
+                f.pop("end", None)
+            else:
+                f["end"] = int(f["end"])
+                if f["end"] <= f["start"]:
+                    raise ValueError()
+        except (ValueError, TypeError, KeyError, OverflowError):
+            problems.append(f"fault {i + 1} needs a valid numeric value and a start/end in range")
+            continue
+        if f.get("kind", "transient") not in ("transient", "config", "external"):
+            problems.append(f"unsupported fault kind {f.get('kind')}")
+            continue
+        if f.get("kind") == "config" and f.get("change") not in _changes():
+            problems.append(f"fault {i + 1} needs a rollback change from the action catalogue")
+            continue
         faults.append(f)
     if not faults:
         problems.append("no usable fault")
     d["faults"] = faults
-    d["events"] = [[int(e[0]), str(e[1]), str(e[2]), str(e[3])] for e in d.get("events", []) if len(e) == 4]
-    d["logs"] = {k: str(v) for k, v in (d.get("logs") or {}).items() if k in topo}
+    try:
+        d["events"] = [[int(e[0]), str(e[1]), str(e[2]), str(e[3])] for e in d.get("events", []) if len(e) == 4]
+        d["logs"] = {k: str(v) for k, v in (d.get("logs") or {}).items() if k in topo}
+    except (ValueError, TypeError, AttributeError):
+        problems.append("events or logs have an invalid format")
+        d["events"], d["logs"] = [], {}
     d["id"] = "x-" + re.sub(r"[^a-z0-9-]", "-", str(d.get("id", "custom")).lower())[:40]
     d["title"] = "CUSTOM: " + str(d.get("title", d["id"]))
     return d, problems
@@ -266,21 +307,24 @@ def job_draft(job, description):
     job.emit("job_started", kind="draft", task=None, run=None)
     prompt = DRAFT_PROMPT.format(deps=DEPS_TEXT, changes=", ".join(_changes()), description=description)
     job.emit("log", level="info", msg="asking the subject model to draft the case")
-    text, raw = ask_subject(prompt)
-    job.emit("draft_text", text=text)
-    block = parse_json_block(text)
-    if block is None and "{" in text:     # some drafts skip the fence: take the outermost object
-        try:
-            block = json.loads(text[text.index("{"):text.rindex("}") + 1])
-        except json.JSONDecodeError:
-            block = None
-    if block is None:
-        job.emit("case_error", error="the draft has no parseable JSON block")
-        return
-    case, problems = _validate(block)
-    for p in problems:
-        job.emit("log", level="warn", msg=p)
-    if not case["faults"]:
+    for attempt in range(2):
+        text, raw = ask_subject(prompt)
+        job.emit("draft_text", text=text)
+        block = parse_json_block(text)
+        if block is None and "{" in text:
+            try:
+                block = json.loads(text[text.index("{"):text.rindex("}") + 1])
+            except (json.JSONDecodeError, ValueError):
+                block = None
+        case, problems = _validate(block)
+        if not problems:
+            break
+        for p in problems:
+            job.emit("log", level="warn", msg=p)
+        if attempt == 0:
+            job.emit("log", level="info", msg="repairing the invalid draft")
+            prompt += "\n\nYour previous draft was invalid: " + "; ".join(problems) + "\nCorrect it and return the complete JSON again.\nPrevious draft:\n" + text
+    else:
         job.emit("case_error", error="; ".join(problems))
         return
     inc = cases.save(case)
