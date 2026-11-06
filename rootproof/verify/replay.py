@@ -2,14 +2,14 @@
 from itertools import combinations
 
 from ..config import JUDGE_WINDOW, SEEDS, SLO_ERROR_RATE
-from ..scenario.actions import ACTIONS
+from ..scenario.actions import ACTIONS, ALL_ACTIONS
 from ..scenario.incidents import topology_for
 from ..scenario.topology import ENTRY
 from ..sim import error_rate, run
 
 
 def ops_for(action_keys):
-    return [op for key in action_keys for op in ACTIONS[key].ops]
+    return [op for key in action_keys for op in ALL_ACTIONS[key].ops]
 
 
 def replay(incident, action_keys, seed=0):
@@ -26,9 +26,9 @@ def resolves_on_all_seeds(incident, action_keys):
     return all(resolves(incident, action_keys, s) for s in SEEDS)
 
 
-def ground_truth(incident):
+def ground_truth(incident, catalog=ACTIONS):
     """Minimal sufficient action sets: every single executable action, else every pair."""
-    keys = [k for k, a in ACTIONS.items() if a.ops]
+    keys = [k for k, a in catalog.items() if a.ops]
     singles = [(k,) for k in keys if resolves(incident, [k])]
     if singles:
         return singles

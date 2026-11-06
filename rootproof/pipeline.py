@@ -11,10 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import DOCS, JUDGE_WINDOW, PAGE_T, RESULTS, RUNS, SLO_ERROR_RATE
 from .harness import load_attempt
+from .audit_extra import AUDIT_EXTRA
+from . import investigation
 from .labels import AUDIT, REFERENCE, TRAP
 from .scenario.actions import ACTIONS
 from .scenario.incidents import INCIDENTS, topology_for
-from .scenario.topology import ENTRY
+from .scenario.topology import ENTRY, SERVICES
 from .sim import run
 from .timeline import clock
 from .verify.extract import parse_json_block
@@ -55,6 +57,33 @@ def audit(verdicts):
             agree += (key in got) == (key in labels)
         rows.append({"task": task_id, "hand_labels": sorted(labels), "jev": sorted(got), "exact_match": got == labels})
     return {"decisions_agreeing": agree, "decisions_total": total, "rows": rows}
+
+
+def audit_repeats(verdicts):
+    """The second hand audit: a seeded sample of runs 2-5, actions and named roots."""
+    agree = total = roots_ok = 0
+    rows = []
+    for (task_id, run_no), label in sorted(AUDIT_EXTRA.items()):
+        ex = verdicts[("ai", task_id, run_no)].extraction
+        got = set(ex.actions)
+        for key in ACTIONS:
+            total += 1
+            agree += (key in got) == (key in label["actions"])
+        roots_ok += sorted(ex.roots) == sorted(label["roots"])
+        rows.append({"task": task_id, "run": run_no, "hand_labels": sorted(label["actions"]), "jev": sorted(got),
+                     "hand_roots": label["roots"], "extracted_roots": ex.roots})
+    return {"decisions_agreeing": agree, "decisions_total": total, "roots_matching": roots_ok, "pairs": len(rows),
+            "rows": rows}
+
+
+def format_findings(verdicts):
+    """Answers whose declared root_cause_service is not exactly one known service name (prose, or several services)."""
+    out = []
+    for (kind, task_id, run_no), v in sorted(verdicts.items()):
+        named = (v.extraction.json_block or {}).get("root_cause_service")
+        if kind == "ai" and named not in SERVICES:
+            out.append({"task": task_id, "run": run_no, "root_cause_service": named, "read_as": v.extraction.roots})
+    return out
 
 
 def curve(incident, action_keys):
@@ -103,8 +132,14 @@ def run_evaluation():
     os.makedirs(RESULTS, exist_ok=True)
     verdicts, truth = verify_all()
     aud = audit(verdicts)
+    aud2 = audit_repeats(verdicts)
+    fmt = format_findings(verdicts)
+    inv_runs, inv_truth, inv_self = investigation.evaluate()
+    inv_stats = investigation.stats(inv_runs, {i.id: verdicts[("ai", i.id, 1)].verdict for i in INCIDENTS})
     write_ground_truth(INCIDENTS, verdicts, truth)
     data = build_site_data(INCIDENTS, verdicts, truth, aud)
+    data["investigation"] = {"stats": inv_stats, "selftest": inv_self, "runs": inv_runs,
+                             "audit_repeats": aud2, "format_findings": fmt}
     build(data, os.path.join(RESULTS, "report.html"))
     robust = {inc.id: [resolves_on_all_seeds(inc, list(s)) for s in truth[inc.id]] for inc in INCIDENTS}
     summary = {"verdicts": [{"kind": k, "task": t, "run": r, **v.to_dict()} for (k, t, r), v in verdicts.items()],
@@ -112,7 +147,10 @@ def run_evaluation():
                "ground_truth_robust": robust,
                "extraction_audit": aud,
                "causal_chains": {t["id"]: t["chain"] for t in data["tasks"]},
-               "rcaeval": data["rcaeval"], "stats": data["stats"]}
+               "rcaeval": data["rcaeval"], "stats": data["stats"],
+               "extraction_audit_repeats": aud2, "format_findings": fmt,
+               "investigation": {"stats": inv_stats, "selftest": inv_self, "ground_truth": inv_truth,
+                                 "runs": [{k: r[k] for k in ("task", "run", "verdict", "trace")} for r in inv_runs]}}
     with open(os.path.join(RESULTS, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=list)
     for inc in INCIDENTS:
@@ -121,4 +159,7 @@ def run_evaluation():
               f"trap {verdicts[('trap', inc.id, 0)].verdict}")
     print(json.dumps(data["stats"], indent=1))
     print("rcaeval test:", json.dumps(data["rcaeval"]["test"]))
+    print("investigation:", json.dumps(inv_stats))
+    print("trace self-test:", sum(c["pass"] for c in inv_self), "of", len(inv_self))
+    print("audit repeats:", aud2["decisions_agreeing"], "of", aud2["decisions_total"], "roots", aud2["roots_matching"], "of", aud2["pairs"])
     return 0

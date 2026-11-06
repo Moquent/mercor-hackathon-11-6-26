@@ -262,3 +262,39 @@ def topology_for(incident):
     for svc in incident.sticky:
         topo[svc].sticky = True
     return topo
+
+
+# Network incidents for the investigation track: the callee is healthy, the link to it is not.
+NET_INCIDENT_DATA = [
+    dict(
+        id="16-link-partition", title="NET: a NetworkPolicy change cuts player-core off from a healthy media-cache",
+        faults=[Fault("F1", "player-core", "link", 0.92, 110, kind="config", change="netpolicy", link="media-cache")],
+        events=[(95, "media-cache", "deploy", "v3.2.0 rolled out (100%): eviction tuning"),
+                (110, "player-core", "config", "NetworkPolicy np-player-egress updated (PR #5310: restrict egress to labelled namespaces)"),
+                (200, "session-api", "alert", "HighErrorRate firing (err% > 20 for 60s)")],
+        logs={"player-core": "media-cache request failed: upstream connect error or disconnect/reset before headers (attempt n/4)",
+              "session-api": "call player-core failed: upstream error (attempt 1/2, 2/2)",
+              "edge-gw": "upstream session-api returned 502",
+              "media-cache": None},
+        truth="The NetworkPolicy update at 14:01:50 blocks ~92% of player-core -> media-cache connections. media-cache itself is healthy "
+              "(0% own errors; its traffic drops because requests never arrive). The media-cache deploy at 14:01:35 is a red herring. "
+              "Rolling back the NetworkPolicy ends the incident; rolling back or restarting media-cache does nothing.",
+    ),
+    dict(
+        id="17-origin-partition", title="NET: media-cache loses its route to vela-origin; fallback floods the backups",
+        faults=[Fault("F1", "media-cache", "link", 1.0, 105, kind="config", change="netpolicy", link="vela-origin")],
+        events=[(80, "vela-origin", "vendor", "status page: 'degraded performance in us-east' (posted 13:10, resolved 13:40)"),
+                (105, "media-cache", "config", "egress firewall rule set fw-cache-egress v12 applied (CIDR cleanup)"),
+                (220, "media-cache", "alert", "OriginFallbackRate > 30%")],
+        logs={"media-cache": "origin vela-origin: connect timeout / connection refused, falling back",
+              "brio-origin": "HTTP 429 Too Many Requests (tenant quota 60 req/s)",
+              "korra-origin": "media URI unavailable for catalog id (not licensed in region)",
+              "player-core": "media-cache returned error, attempt n/4",
+              "session-api": "player-core call failed: upstream error (attempt 1/2, 2/2)"},
+        truth="The egress firewall change at 14:01:45 blocks every media-cache -> vela-origin connection. vela-origin is healthy (its "
+              "traffic just stops). Traffic falls through to korra (misses) and brio (60 req/s quota, 429s). Rolling back the firewall "
+              "rule ends the incident; vela-origin needs no action and raising brio's quota does not fix it.",
+    ),
+]
+
+NET_INCIDENTS = [Incident(**d) for d in NET_INCIDENT_DATA]

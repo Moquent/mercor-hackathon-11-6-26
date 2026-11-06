@@ -88,11 +88,14 @@ def _root_checks(incident, rows, blamed, t_inc, first):
     for p in parents:
         chain = topo[p].deps
         shifted = [c for c in chain[:chain.index(svc)] if series(rows, c, "err")[PAGE_T] > 0.5]
-    victim = bool(earlier or shifted)
+    own_links = [f.link for f in incident.faults if f.link and f.svc == svc]
+    victim = bool(earlier or shifted) and not own_links   # a broken outbound link of its own makes it the origin
     why = (f"its failures follow {', '.join(earlier)} which failed first" if earlier else
            f"its load came from fallback traffic after {', '.join(shifted)} failed" if shifted else "")
     checks.append(Check("origin", not victim,
-                        f"{blamed} is a victim: {why}." if victim else f"{blamed} is an origin, not a downstream victim."))
+                        f"{blamed} is a victim: {why}." if victim else
+                        f"{blamed} is an origin: its own connection to {', '.join(own_links)} is failing." if own_links else
+                        f"{blamed} is an origin, not a downstream victim."))
     return checks
 
 

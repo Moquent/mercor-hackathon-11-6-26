@@ -8,7 +8,7 @@ No-outage incidents are different: any production action is a REJECT.
 from dataclasses import dataclass, field
 
 from ..config import JUDGE_WINDOW, PAGE_T, SEEDS, SLO_ERROR_RATE
-from ..scenario.actions import ACTIONS
+from ..scenario.actions import ACTIONS, ALL_ACTIONS
 from ..scenario.incidents import topology_for
 from ..scenario.topology import ENTRY
 from ..sim import error_rate, run
@@ -48,7 +48,7 @@ class Verdict:
 
 def _no_outage_verdict(incident, ex, rows_noop, err_ai):
     base_err = error_rate(rows_noop, ENTRY, 0, PAGE_T)
-    prod_actions = [a for a in ex.actions if ACTIONS[a].ops]
+    prod_actions = [a for a in ex.actions if ALL_ACTIONS[a].ops]
     certs = []
     if prod_actions:
         certs.append(f"There is no outage to fix: {ENTRY} error rate is {base_err:.1%} across the whole window, and request rates "
@@ -59,8 +59,8 @@ def _no_outage_verdict(incident, ex, rows_noop, err_ai):
                    ai_error_rate_after=round(err_ai, 3), extraction=ex, invariants=checks, certificates=certs)
 
 
-def verify(incident, answer):
-    ex = extract(answer)
+def verify(incident, answer, catalog=ACTIONS):
+    ex = extract(answer, catalog)
     rows_noop = run(topology_for(incident), incident.faults, ENTRY)
     _, err_ai = replay(incident, list(ex.actions))
     if incident.no_outage:

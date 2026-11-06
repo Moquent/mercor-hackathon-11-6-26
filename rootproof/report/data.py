@@ -13,7 +13,6 @@ from ..rcaeval.topology import DEPS
 from ..scenario.incidents import topology_for
 from ..scenario.topology import ENTRY
 from ..sim import run
-from ..sim.traces import sample_traces
 from ..timeline import clock
 from ..verify import chain
 from ..verify.claims import LOAD_SOURCES
@@ -66,16 +65,6 @@ def node_series(incident):
     return out
 
 
-def exemplar_traces(incident):
-    """Sampled request traces just before and at the page (illustrative; the AI never sees them)."""
-    topo = topology_for(incident)
-    rows = run(topo, incident.faults, ENTRY)
-    out = []
-    for second in EXEMPLAR_SECONDS:
-        out += sample_traces(topo, rows, ENTRY, second, n=4)
-    return out
-
-
 def _task_record(incident, verdicts, truth, chains):
     v = verdicts[("ai", incident.id, 1)]
     att = load_attempt(incident.id, 1)
@@ -98,7 +87,7 @@ def _task_record(incident, verdicts, truth, chains):
         "curves": {"noop": curve(incident, []), "fix": curve(incident, fix),
                    "ai": curve(incident, list(v.extraction.actions))},
         "chain": asdict(chains[incident.id]), "nodes": node_states(incident),
-        "series": node_series(incident), "traces": exemplar_traces(incident),
+        "series": node_series(incident),
         "events": [["yesterday" if e[0] < 0 else clock(e[0]), e[1], e[2], e[3]] for e in sorted(incident.events)],
         "logs": incident.logs,
         "reference": verdicts[("reference", incident.id, 0)].verdict, "trap": trap.verdict,

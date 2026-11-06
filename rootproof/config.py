@@ -9,6 +9,7 @@ DOCS = os.path.join(ROOT, "docs")
 RCAEVAL_DATA = os.path.join(ROOT, "data", "rcaeval")
 RCAEVAL_TASKS = os.path.join(TASKS, "rcaeval")
 RCAEVAL_ATTEMPTS = os.path.join(ATTEMPTS, "rcaeval")
+AGENT_ATTEMPTS = os.path.join(ATTEMPTS, "agent")
 JEV_CACHE = os.path.join(RESULTS, "jev_cache.json")
 
 SUBJECT_MODEL = "gpt-6-luna"

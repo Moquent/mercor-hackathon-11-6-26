@@ -42,3 +42,11 @@ CATALOG = {
 
 
 ACTIONS = {key: Action(key, description, tuple(ops)) for key, (description, ops) in CATALOG.items()}
+
+# Network actions, used only by the investigation track (incidents with link faults). Kept out of ACTIONS so the
+# Jev questions for the original fifteen incidents, and therefore the cached answers, stay byte-identical.
+NET_CATALOG = {
+    "rollback_netpolicy": ("Roll back or revert the recent NetworkPolicy / firewall / egress or network rule change", [("rollback", "netpolicy")]),
+}
+NET_ACTIONS = {key: Action(key, description, tuple(ops)) for key, (description, ops) in NET_CATALOG.items()}
+ALL_ACTIONS = ACTIONS | NET_ACTIONS

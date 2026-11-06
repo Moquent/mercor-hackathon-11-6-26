@@ -34,6 +34,7 @@ class Fault:
     end: int = 10 ** 9
     kind: str = "transient"      # transient: cleared by restart | config: cleared by rollback | external: by restore
     change: str = ""             # change owner a rollback targets (deploy/job name)
+    link: str = ""               # set: a network fault on the svc -> link connection; value = share of connections refused
 
 
 def _order(svcs, entry):
@@ -75,11 +76,15 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
                     restarted_at[op[1]] = t
                     backlog[op[1]] = 0.0
         svcs = {n: replace(s, deps=list(s.deps)) for n, s in topology.items()}
+        links = {}
         for f in faults:
             if f.start <= t < f.end and f.id not in cleared:
                 if f.kind == "transient" and f.svc in restarted_at and t >= restarted_at[f.svc]:
                     continue
-                setattr(svcs[f.svc], f.field, f.value)
+                if f.link:
+                    links[(f.svc, f.link)] = f.value
+                else:
+                    setattr(svcs[f.svc], f.field, f.value)
         if t >= PAGE_T:
             for op in actions:
                 if op[0] == "set":
@@ -92,11 +97,13 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
             s = svcs[n]
             carry = offered[n]
             for c in s.deps:
-                p = _retryable(p_fail[c], p_sticky[c])
+                p_link = links.get((n, c), 0.0)
+                pf = _with_link(p_fail[c], p_link)
+                p = _retryable(pf, p_sticky[c])
                 attempts = sum(p ** k for k in range(s.retries + 1))
-                offered[c] += carry * attempts
+                offered[c] += carry * attempts * (1 - p_link)
                 if s.mode == "fallback":
-                    carry *= _fail_after_retries(p_fail[c], p_sticky[c], s.retries)
+                    carry *= _fail_after_retries(pf, p_sticky[c], s.retries)
         p_self = {}
         for n in reversed(order):
             s = svcs[n]
@@ -113,13 +120,13 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
                 miss, child_ms = 1.0, 0.0
                 for c in s.deps:
                     child_ms += miss * min(lat[c], s.timeout_ms)
-                    miss *= _fail_after_retries(p_fail[c], p_sticky[c], s.retries)
+                    miss *= _fail_after_retries(_with_link(p_fail[c], links.get((n, c), 0.0)), p_sticky[c], s.retries)
                 ok = (1 - s.err) * (1 - reject) * (1 - miss)
             else:
                 child_ms = sum(min(lat[c], s.timeout_ms) for c in s.deps)
                 ok = (1 - s.err) * (1 - reject)
                 for c in s.deps:
-                    ok *= 1 - _fail_after_retries(p_fail[c], p_sticky[c], s.retries)
+                    ok *= 1 - _fail_after_retries(_with_link(p_fail[c], links.get((n, c), 0.0)), p_sticky[c], s.retries)
             lat[n] = own_ms + wait_ms + child_ms
             p_self[n] = 1 - ok
         for n in order:
@@ -139,6 +146,11 @@ def run(topology, faults, entry, actions=(), seed=0, rps=200.0, t_end=SIM_T):
             rows.append({"t": t, "svc": n, "rps": offered[n] * noise, "lat_ms": lat[n] * noise,
                          "err": p_self[n], "seen_fail": p_fail[n], "backlog": backlog[n]})
     return rows
+
+
+def _with_link(p, p_link):
+    """Failure share seen by a caller when the callee fails with p and the connection itself is refused with p_link."""
+    return p if not p_link else 1 - (1 - p) * (1 - p_link)
 
 
 def _retryable(p, p_st):

@@ -69,13 +69,14 @@
   }
 
   /* ---------- routing ---------- */
-  const PAGES = ['overview', 'incidents', 'real', 'method'];
+  const PAGES = ['overview', 'incidents', 'trace', 'real', 'method'];
   function route() {
     const parts = location.hash.replace(/^#\/?/, '').split('/');
     const page = PAGES.indexOf(parts[0]) >= 0 ? parts[0] : 'overview';
     $$('section.page').forEach((s) => s.classList.toggle('on', s.id === page));
     $$('.nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === page));
     if (page === 'incidents') showIncident(parts[1] || D.tasks[0].id);
+    if (page === 'trace') showTrace(parts[1], parts[2]);
     window.scrollTo(0, 0);
   }
 
@@ -103,6 +104,7 @@
         '<li>On real fresh cases the AI names the right service in ' + pct(rc.ai_service_acc) + ', but the right service and fault in ' + pct(rc.ai_service_and_fault_acc) + '.</li>' +
         '<li>The AI finds ' + pct(s.chain_recall) + ' of the real causal steps, and most of the steps it names are real.</li>' +
       '</ul>' +
+      investigationSummary() +
       '<h2>Verdicts by run</h2>' +
       '<div class="tablewrap"><table><thead><tr><th>Incident</th>' +
         [1, 2, 3, 4, 5].map((r) => '<th>Run ' + r + '</th>').join('') + '<th>Majority</th></tr></thead>' +
@@ -286,17 +288,6 @@
     return vis;
   }
 
-  function waterfall(tr, focus) {
-    const total = Math.max.apply(null, tr.spans.map((s) => s.start_ms + s.duration_ms).concat([1]));
-    const rows = tr.spans.map((s) =>
-      '<div class="wf' + (s.status === 'error' ? ' err' : '') + (s.service === focus ? ' focus' : '') + '">' +
-        '<div class="wf-name" style="padding-left:' + (s.depth * 12) + 'px" title="' + esc(s.service) + '">' + esc(s.service) + (s.attempts > 1 ? ' ×' + s.attempts : '') + '</div>' +
-        '<div class="wf-track"><div class="wf-bar" style="left:' + (s.start_ms / total * 100).toFixed(2) + '%;width:' + Math.max(s.duration_ms / total * 100, 0.6).toFixed(2) + '%"></div></div>' +
-        '<div class="wf-ms">' + Math.round(s.duration_ms) + ' ms</div></div>').join('');
-    return '<figure class="trace" style="margin:0"><figcaption>Sampled at ' + clockAt(tr.second) + ', illustrative. ' +
-      (tr.failed ? 'This request failed.' : 'This request succeeded.') + '</figcaption>' + rows + '</figure>';
-  }
-
   function edgeTags(e) {
     const parts = [];
     if (e.truth) parts.push(e.claim ? 'true, claimed' : 'true');
@@ -326,10 +317,6 @@
     h += '<h4>Events</h4>' + (ev.length
       ? '<ul class="plain">' + ev.map((e) => '<li><span class="time">' + esc(e[0]) + '</span> ' + esc(e[2]) + ': ' + esc(e[3]) + '</li>').join('') + '</ul>'
       : '<p class="muted">No events.</p>');
-    const trs = (t.traces || []).filter((tr) => tr.spans.some((sp) => sp.service === n));
-    h += '<h4>Sampled requests through this service</h4>' + (trs.length
-      ? trs.slice(0, 3).map((tr) => waterfall(tr, n)).join('')
-      : '<p class="muted">No sampled request passes through this service.</p>');
     const down = M.calls[n] || [];
     const up = Object.keys(M.calls).filter((p) => M.calls[p].indexOf(n) >= 0);
     h += '<h4>Calls</h4><p>' + (down.length ? down.map(esc).join(', ') : 'Nothing downstream.') + '</p>';
@@ -666,6 +653,94 @@
     g.reset();
   }
 
+
+  /* ---------- investigations: every AI step, every claim checked against it ---------- */
+  const LABEL_NOTE = {
+    VERIFIED: 'Checked, the cited step shows it, and the simulation agrees.',
+    UNSUPPORTED: 'True, but the steps it cites do not show it.',
+    UNGROUNDED: 'The AI never inspected this service or link.',
+    FALSE: 'The simulation contradicts it.',
+    MALFORMED: 'Not a valid claim.'
+  };
+  const lbl = (l) => '<span class="lbl lbl-' + esc(String(l).toLowerCase()) + '">' + esc(l) + '</span>';
+  const I = D.investigation;
+
+  function investigationSummary() {
+    if (!I) return '';
+    const s = I.stats, b = s.claims_by_label, pv = s.packet_vs_agent_first_accept;
+    return '<h2>Investigations</h2>' +
+      '<p class="lede">In the investigation track the AI uses tools, and every step is recorded. Each claim in its answer is checked against the steps it took. <a href="#trace">Open the investigations</a>.</p>' +
+      '<div class="kpis">' +
+        '<div class="kpi"><b>' + pct(s.verified_rate) + '</b><span>of ' + s.claims + ' claims verified against the AI’s own steps</span></div>' +
+        '<div class="kpi"><b>' + b.FALSE + '</b><span>false claims, ' + b.UNGROUNDED + ' about things it never checked</span></div>' +
+        '<div class="kpi"><b>' + s.right_fix_flawed_story + ' of ' + s.runs + '</b><span>runs with a working fix but a flawed trail</span></div>' +
+        '<div class="kpi"><b>' + pv.agent + ' vs ' + pv.packet + '</b><span>first answers accepted with tools vs without (' + pv.tasks + ' incidents)</span></div>' +
+      '</div>';
+  }
+
+  function renderTrace() {
+    if (!I) { $('#trace').innerHTML = '<h1>Investigations</h1><p>No recorded investigations.</p>'; return; }
+    const tasks = Array.from(new Set(I.runs.map((r) => r.task)));
+    const st = I.selftest, ok = st.filter((c) => c.pass).length, au = I.audit_repeats;
+    $('#trace').innerHTML =
+      '<h1>Investigations</h1>' +
+      '<p class="lede">The AI investigates with tools. Every call, its stated reason and the output it got are recorded. Each claim in the final answer cites step ids, and is checked three ways: did it look, does the cited step show it, is it true.</p>' +
+      '<p class="muted">Trace verifier self-test: ' + ok + ' of ' + st.length + ' hand-built traces labelled correctly. Second extraction audit (runs 2–5, ' + au.pairs + ' answers): ' + au.decisions_agreeing + ' of ' + au.decisions_total + ' decisions agree, ' + au.roots_matching + ' of ' + au.pairs + ' root lists match.</p>' +
+      '<div class="tablewrap"><table class="pick"><thead><tr><th>Incident</th><th>Run 1</th><th>Run 2</th><th>Run 3</th></tr></thead><tbody>' +
+      tasks.map((t) => '<tr><td>' + esc(t) + '</td>' + [1, 2, 3].map((r) => {
+        const x = I.runs.find((y) => y.task === t && y.run === r);
+        if (!x) return '<td>–</td>';
+        const c = x.trace.counts;
+        return '<td><a href="#trace/' + esc(t) + '/' + r + '">' + vword(x.verdict.verdict) + '</a> <span class="muted">' +
+          c.VERIFIED + '✓ ' + (c.FALSE + c.UNGROUNDED + c.UNSUPPORTED) + '✗</span></td>';
+      }).join('') + '</tr>').join('') +
+      '</tbody></table></div><div id="tracepanel"></div>';
+  }
+
+  function showTrace(task, run) {
+    if (!I) return;
+    const x = I.runs.find((y) => y.task === task && String(y.run) === String(run || 1)) || I.runs[0];
+    const tr = x.trace, v = x.verdict;
+    const fw = tr.first_wrong;
+    const stepById = {};
+    x.steps.forEach((s) => { stepById[s.id] = s; });
+    const cite = (ids) => ids.map((id) => '<button type="button" class="link step-ref" data-step="' + esc(id) + '">' + esc(id) + '</button>').join(' ');
+    let h = '<h2>' + esc(x.task) + ', run ' + x.run + '</h2>' +
+      '<p>Replay verdict ' + vword(v.verdict) + '. Entry error rate after the AI’s fix: ' + pct(v.ai_error_rate_after) + '. ' +
+      tr.n_steps + ' tool calls. Root cause named: <b>' + esc((v.extraction.json_block || {}).root_cause_service) + '</b>.</p>';
+    if (fw) {
+      h += '<div class="callout"><b>Where it went wrong:</b> at ' + (stepById[fw.step] ? cite([fw.step]) : esc(fw.step)) +
+        ' it committed to “' + esc(fw.claim) + '” (' + lbl(fw.label) + ').' +
+        (fw.would_have_caught_it ? ' The check that would have caught it was never made: <code>' + esc(fw.would_have_caught_it.tool) + '(' +
+          esc(Object.values(fw.would_have_caught_it.args).join(', ')) + ')</code> → “' + esc(fw.would_have_caught_it.would_show) + '”' : '') + '</div>';
+    } else {
+      h += '<div class="callout ok">Every claim is verified against the AI’s own steps.</div>';
+    }
+    h += '<h3>Claims</h3><div class="tablewrap"><table><thead><tr><th>Claim</th><th>Label</th><th>Looked?</th><th>Evidence shows it?</th><th>True?</th><th>Cited steps</th></tr></thead><tbody>' +
+      tr.claims.map((c) => '<tr><td>' + esc(c.text) + '</td><td title="' + esc(LABEL_NOTE[c.label]) + '">' + lbl(c.label) + '</td>' +
+        '<td>' + (c.grounded ? 'yes' : '<b>no</b>') + '</td><td>' + (c.supported ? 'yes' : '<b>no</b>') + '</td><td>' + (c.true == null ? '–' : c.true ? 'yes' : '<b>no</b>') + '</td>' +
+        '<td>' + cite(c.evidence) + '</td></tr>').join('') + '</tbody></table></div>';
+    h += '<h3>Checks it never made</h3>' + (tr.missed_checks.length
+      ? '<ul class="plain">' + tr.missed_checks.map((m) => '<li><code>' + esc(m.tool) + '(' + esc(Object.values(m.args).join(', ')) + ')</code> would have shown: ' + esc(m.would_show) + '</li>').join('') + '</ul>'
+      : '<p class="muted">None. It inspected every service and link on the true causal path.</p>');
+    h += '<h3>Every step</h3><ol class="steps">' + x.steps.map((s) => {
+      const args = s.args && typeof s.args === 'object' ? Object.keys(s.args).filter((k) => k !== 'reason').map((k) => s.args[k]).join(', ') : esc(s.args);
+      return '<li id="step-' + esc(s.id) + '"' + (fw && fw.step === s.id ? ' class="wrong"' : '') + '><div class="sh"><b>' + esc(s.id) + '</b> <code>' + esc(s.tool) + '(' + esc(args) + ')</code></div>' +
+        (s.reason ? '<div class="why">Why: ' + esc(s.reason) + '</div>' : '') +
+        (s.reasoning_summary && s.reasoning_summary.length ? '<details><summary>Reasoning summary</summary><p class="muted">' + esc(s.reasoning_summary.join(' ')) + '</p></details>' : '') +
+        '<pre class="out">' + esc(s.output) + '</pre></li>';
+    }).join('') + '</ol>';
+    h += '<details><summary>Final answer (unedited)</summary><pre class="out">' + esc(x.answer) + '</pre></details>';
+    $('#tracepanel').innerHTML = h;
+    $$('#tracepanel .step-ref').forEach((b) => b.addEventListener('click', () => {
+      const el = document.getElementById('step-' + b.dataset.step);
+      if (!el) return;
+      $$('#tracepanel .steps li.hit').forEach((li) => li.classList.remove('hit'));
+      el.classList.add('hit');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
+  }
+
   /* ---------- method ---------- */
   function renderMethod() {
     const s = D.stats;
@@ -688,6 +763,7 @@
   /* ---------- boot ---------- */
   renderOverview();
   renderIncidents();
+  renderTrace();
   renderReal();
   renderMethod();
   window.addEventListener('hashchange', route);

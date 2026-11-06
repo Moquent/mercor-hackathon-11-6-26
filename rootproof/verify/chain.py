@@ -72,7 +72,7 @@ def true_graph(incident):
             for parent, svc in topo.items():
                 if x in svc.deps and onset.get(parent) is not None and (onset.get(x) is None or onset[parent] >= onset[x] - FAILURE_WINDOW_S):
                     nexts.append(parent)
-            amplified = topo[x].deps if topo[x].retries else topo[x].deps[1:] if topo[x].mode == "fallback" else []
+            amplified = topo[x].deps if topo[x].retries or topo[x].mode == "fallback" else []
             for c in amplified:
                 if rps[(PAGE_T, c)] > LOAD_RATIO * max(1.0, rps[(60, c)]):
                     nexts.append(c)

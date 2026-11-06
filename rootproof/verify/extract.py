@@ -43,17 +43,17 @@ def _state_text(answer, block):
             f"Recommended actions:\n{actions}")
 
 
-def extract(answer):
+def extract(answer, catalog=ACTIONS):
     block = parse_json_block(answer)
     questions = {"blamed": {"type": "choice",
                             "instructions": "Which single component does this diagnosis name as the root cause?",
                             "criteria": {s: s for s in SERVICES} | {"none": "no single component / unclear"}}}
-    for key, action in ACTIONS.items():
+    for key, action in catalog.items():
         questions[key] = {"type": "noul",
                           "instructions": f"Does the recommended remediation include this action: {action.description}?"}
     res = jev(_state_text(answer, block), questions)
     ans = res["answers"]
-    actions = {k: ans[k]["noul"] for k in ACTIONS if ans[k]["noul"] >= JEV_THRESHOLD}
+    actions = {k: ans[k]["noul"] for k in catalog if ans[k]["noul"] >= JEV_THRESHOLD}
     named = str((block or {}).get("root_cause_service", ""))
     roots = [s for s in SERVICES if re.search(rf"(?<![\w-]){re.escape(s)}(?![\w-])", named)]
     if not roots and ans["blamed"]["choice"] != "none":
@@ -61,4 +61,4 @@ def extract(answer):
     return Extraction(
         json_block=block, jev_model=res.get("model"), blamed=ans["blamed"]["choice"], roots=roots,
         blamed_confidence=ans["blamed"].get("confidence"), actions=actions,
-        action_probs={k: round(ans[k]["noul"], 3) for k in ACTIONS})
+        action_probs={k: round(ans[k]["noul"], 3) for k in catalog})

@@ -1,0 +1,3226 @@
+{
+ "task": "04-docstore-poller",
+ "run": 3,
+ "model_requested": "gpt-6-luna",
+ "started_at_utc": "2026-11-06T19:48:20.991211+00:00",
+ "prompt": "You are the on-call SRE for Larkwave, a music streaming service. You were paged at 14:05:00: listeners are seeing errors.\nInvestigate with the tools (each call needs a one-sentence reason), find the root cause, and say exactly what the on-call\nshould do right now to restore service. If more than one action is needed, list every one, with exact values.\nEvery tool result starts with a step id like [s3]. Only claim what you have checked; cite the step ids that show it.\n\nEnd your answer with a JSON block exactly like:\n```json\n{\"root_cause_service\": \"...\", \"mechanism\": \"...\", \"actions\": [\"...\", \"...\"],\n  \"claims\": [\n    {\"kind\": \"state\", \"service\": \"<service>\", \"state\": \"erroring|slow|overloaded|healthy\", \"evidence\": [\"s1\"]},\n    {\"kind\": \"edge\", \"src\": \"<caller>\", \"dst\": \"<callee>\", \"type\": \"failure|load|unreachable\", \"evidence\": [\"s2\"]},\n    {\"kind\": \"cause\", \"service\": \"<root cause service>\", \"evidence\": [\"s3\", \"s4\"]}\n  ]}\n```\nA state claim says what a service is doing; an edge claim says how one service's problem reaches its caller\n(\"failure\": the callee's errors or slowness, \"load\": the caller's extra traffic overloads the callee, \"unreachable\": the\ncaller cannot connect although the callee may be fine). Include one claim for every service and link your diagnosis relies on.",
+ "tools": [
+  {
+   "type": "function",
+   "name": "list_services",
+   "description": "List every Larkwave service you can inspect.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_dependencies",
+   "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_metrics",
+   "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_logs",
+   "description": "Error log line count and a sample message for a service since 14:00:00.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "check_health",
+   "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "service",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "check_connectivity",
+   "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "type": "function",
+   "name": "get_changes",
+   "description": "The change / deploy / alert log up to the page, newest last.",
+   "strict": true,
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "reason": {
+      "type": "string",
+      "description": "Why you are making this call, in one sentence."
+     }
+    },
+    "required": [
+     "reason"
+    ],
+    "additionalProperties": false
+   }
+  }
+ ],
+ "max_tool_calls": 20,
+ "exchanges": [
+  {
+   "sent_at_utc": "2026-11-06T19:48:20.991216+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "input": "You are the on-call SRE for Larkwave, a music streaming service. You were paged at 14:05:00: listeners are seeing errors.\nInvestigate with the tools (each call needs a one-sentence reason), find the root cause, and say exactly what the on-call\nshould do right now to restore service. If more than one action is needed, list every one, with exact values.\nEvery tool result starts with a step id like [s3]. Only claim what you have checked; cite the step ids that show it.\n\nEnd your answer with a JSON block exactly like:\n```json\n{\"root_cause_service\": \"...\", \"mechanism\": \"...\", \"actions\": [\"...\", \"...\"],\n  \"claims\": [\n    {\"kind\": \"state\", \"service\": \"<service>\", \"state\": \"erroring|slow|overloaded|healthy\", \"evidence\": [\"s1\"]},\n    {\"kind\": \"edge\", \"src\": \"<caller>\", \"dst\": \"<callee>\", \"type\": \"failure|load|unreachable\", \"evidence\": [\"s2\"]},\n    {\"kind\": \"cause\", \"service\": \"<root cause service>\", \"evidence\": [\"s3\", \"s4\"]}\n  ]}\n```\nA state claim says what a service is doing; an edge claim says how one service's problem reaches its caller\n(\"failure\": the callee's errors or slowness, \"load\": the caller's extra traffic overloads the callee, \"unreachable\": the\ncaller cannot connect although the callee may be fine). Include one claim for every service and link your diagnosis relies on.",
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_02ef8df7c6dcd9f3006aee2f051d5087d2b9ef33ff9f05a91a",
+    "object": "response",
+    "created_at": 1793994501,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793994503,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f05b01c87d2a4355b6e00863610",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8Hhrzs832d9K4xweivlKtoa9c0TjlpH1LeaAUMZkpsbCcZn0QA89xWAEm6s9XFEfVpDxo8uHxuwfKG6ZZdTSQUR_iQi6OMgDIbV7qzVkSMnszGf9fUSpCJWCgRWz9PlRRKASf23YLn4ifE-LKLjHzs8q9OCTdlyPyWbgj7OHpd5jyE0S5bt2gYjHa1dUolOoQ95vcVMy5IaWbHCWBVqegupv1kNEcVT_QMiwSM93GOhmrSSKGZV7eCIOWFlOepCJIYKtLEVH88hMuFwqtPjz8Ixa13DIbfLaP6PMRlr1iKVsvkIbLkO24Z5zfWGhpSDBhjonHy2DnZ1fUpDoM09sNz-EAEewJD7s4fomuxhKtKBZXTbKnNpiqQ49ilHBbhlorH0WoCy_HWkFebEAChTfHkfzl_grhMfU5ZBChz7VVALLYeLPXGUbyMqlEq9E_-KDQpYmDKiGvBa92SIrl97vdhwoARYh2n7_3OUQ-cjG1ko7-3NBNqrJOlHh7MxwiyLUXSzujkKntaxJC1jAlszs3JS12ZKqPiDjan_c0CaE6TwBA-mrNgrcffpqU1vFmAwN5kfirAtp9rD0CyeSASh4aHPuhQdABo-TzYiRmvuWrb8y86p-_KHJ-8evJ1yPbHhw1fPFdMUJE8Etx40xfWVfgfOWRCjOiXkKlmj47pxEEDNtxASv2MHlx1maXEyW3qEm4To0ZlWKXs8j_KoVM6BHS3G7Xm97QmKFdd16WsRe9CONNINO6fLdVlhQFyo0AVCRtGw45WNxKSGtE93qkj4WWr87xPNSQbpJw9_Sr5lCSHag4LLKr-5Bm2SbZSSDFIJ8kpD0fhQYQ72EqebBqVivDIpN0Dcn3alIHzeH2xyn5Y6qooE7QVvKaNsh4udorb729f2_mTJpW-cIcR6km0NEwp1OFjU12KwOlZ_q-l4GNmrnNLqFTbqXe9dtCFjn2WF5f481cBlAJPassnWHVOUMSoQfXtgwSzrbMT5aUAX4BK9zMr0LPvV0-bEJiL2qUsdGh4AHTKrtLuPPKUPVzpsvT4aljLVXvXLUZsTH1ZI-uwWunb_mScOXmfP7H7xIYX5ow-0SHrEO0mjI67MGqs7lAbQNNX3wbbn2JJWLwKj4_X3eCn7hjGWxqKjAWywjcYy4yhHgPm0X5kr0S2OUzWkdzhNnfKP0qgBzYgRVBdJybGI-hdaKHVRExH69mhIkr5c05lRLj_4iMQan4cTbKopB1rTSKK8n6EafgHQ4yFwWTLTduzvuA38y701L5kwI-HV-o2emPtAtbcA8WtFZJ7LNjcOPeZbrx5mYKQkAO9WuUnBn_Dq9_i6_AoIPLUPmbEgLxW5af5-5wTNVh39vsUzVN4Jo6R0MXGNKSB6TRlFG4FxcMQCuDUc9HjXNVNrnvo-UW2mKDYhtR1w425mxq4pDSNMmi3c9yM8MD_9yyu_wuS_O1i2xzJmtKuxrxIVrZ2E3KRzbfa_eKhZLl5Gb-1AqYd5PF4SkQVhQePhmHzYa0o0bxcaIWiYffqtUBhiEXlqEj3Nw4up7eIEnKEaUa4kezqdg_qk-59T8cPYzc1YrSFBvo32ZwqAs053ku5Mek4MK1RYOR8ueZelhyN6Jd4oomzPA==",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Investigating services and changes**\n\nI\u2019m thinking we should investigate the services we\u2019re dealing with. I might start a list of the services and any changes that need to happen, maybe even working on them in parallel. That way, I can get a feel for everything at once. It feels like a good approach to keep things organized and efficient. Let\u2019s make sure to cover all the bases as we dive in!"
+       }
+      ]
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f06ec0c87d28c50ad9dfe4088ef",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"reason\":\"Identify the available Larkwave services so I can trace the listener error path.\"}",
+      "call_id": "call_92jtxAS11Rt08FCJEJMMXSG6",
+      "name": "list_services"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 726,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 51,
+     "output_tokens_details": {
+      "reasoning_tokens": 16
+     },
+     "total_tokens": 777
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T19:48:23.287891+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f051d5087d2b9ef33ff9f05a91a",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_92jtxAS11Rt08FCJEJMMXSG6",
+      "output": "[s1] edge-gw\nsession-api\ndocstore\nmeta-index\nnotify-relay\nplayer-core\nmedia-cache\nvela-origin\nkorra-origin\nbrio-origin\nclip-preview\nclipstream-origin"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_02ef8df7c6dcd9f3006aee2f0770cc87d2b26665e81b7cd371",
+    "object": "response",
+    "created_at": 1793994503,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793994506,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f09cbe087d29eb0e70f13ed6063",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"reason\":\"Check recent deploys, alerts, or changes that could explain the incident.\"}",
+      "call_id": "call_ZGcfqM4LlGC5N8dOBhiIyzt8",
+      "name": "get_changes"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f09cbf487d2a255943b115717d2",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Trace the public request dependencies to locate the affected playback path.\"}",
+      "call_id": "call_CjTk2bVp4HijUkxutfhRhOGu",
+      "name": "get_dependencies"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f09cbfc87d29e11f6b2b514fb05",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"player-core\",\"reason\":\"Inspect playback service dependencies to trace failures downstream.\"}",
+      "call_id": "call_dfW1bM8EtBSYizCCRyc7IQAe",
+      "name": "get_dependencies"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f051d5087d2b9ef33ff9f05a91a",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 831,
+     "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+     },
+     "output_tokens": 106,
+     "output_tokens_details": {
+      "reasoning_tokens": 0
+     },
+     "total_tokens": 937
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T19:48:26.306398+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0770cc87d2b26665e81b7cd371",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_ZGcfqM4LlGC5N8dOBhiIyzt8",
+      "output": "[s2] 14:01:40   sub-poller        deploy  v1.8.0: subscription sync interval 60s -> 5s, full scan of subscriptions per worker\n14:02:30   docstore          infra   primary CPU 97%, connections 4890/5000\n14:03:30   session-api       alert   BotRuntimeSaturated / p99 > 1.5s\n14:04:20   docstore          alert   SlowQueries > 2k/min (collection: subscriptions)"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_CjTk2bVp4HijUkxutfhRhOGu",
+      "output": "[s3] edge-gw -> session-api (all required per request); timeout 3000ms, retries 0"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_dfW1bM8EtBSYizCCRyc7IQAe",
+      "output": "[s4] player-core -> media-cache (all required per request); timeout 1200ms, retries 3"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_02ef8df7c6dcd9f3006aee2f0a6cec87d29d942e9fa9cf6b3c",
+    "object": "response",
+    "created_at": 1793994506,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793994510,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f0b32bc87d297f5796db13ffdc1",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8O8T9UR2hiYwaL1D5V3LrJ3OHtSvhEmhwHnI198p2jbxlO4rGqsx9D72lok8VVtBEz6nuMUuo2Ojpy8ceSqVyvBecWz-3bDdUWzhWu--maNY6wssz9a_-4VBX50xQGt7jf8mrCrMEHwvO4cSg_-2RuoqQANs5X6PM1NdsrQIkU1ppuF2pW3ZcixPx-WyDv4Fo4ebZP3MB_Ads79OjF1MF3GKQdcljSRN_RKA6oRjpR488ht1q6_r1roXk9bpu0_RlzVA2cTYCOiJNYUBuUzSTFvCBHcrw1DvMwByxI0WAKSwNBUYNdWrweI-SE8kNmhKJ4FDFJbQssm94-o-rjoKX11STxk8QHg7E1GrwAxhkGT-IrGs-NqM3D5y5wXryun-04lg9w3IosEUM2QjK-CYIyHA1RrwAV55d_Ek28GutkELADt3CXW8DBDeacvX6r-bbwAUxirx7zvfqREB_OzzTrkWwSdPnwEYSA-vSMmr5Rjg2gmmkGkhlBNtutmuq48yNJvEJrM2umHHR5X3Hun74w1hnxfMK7sgK5GTWwYI6JyCJsCut1jBybesSTN7pjJeVxYLKQ1gGGD2qVEcag_aDLpFQnQgKysltMABfroGobS1_KX_taZlPEctL8P_ogBFgEjTfJc2fffWcIC-ZyWj2lNPOwF6YL_LDi43wKWhL1w8oi9kIKpJqXpg6pDnicnupFAV83d0h3nQ-W2rKw77n6mNJ6ObOHQoknH49qv0I1mFVxDiremdx1tjw8UXroX_Bvhn0LTKXcqEmTvCaD00irsudiYR3TH8t0d4jyPR8LuVy7ISEcoH6EVGl8yF1KrMwwr3KX8Z_T9knCmgLZwE81at1v9fwgLlppzQCUm3wpcJkFQikKCrTT7cFBtbC0rzlf43GPxcZhhE89SvgcFbui4vinUt-GVVYGhlmpi5IUSCxF7e9TR1ZiF4sTw_FRE4nNIu0laLKducg0C0Q91B8SugKXbWxpZ-WfBgvDdSlwmAtmky0Yll-lzVpO4nNAePWpmJAycqYmGwxOVJ5OSLSmkoJ3n6zJDiggNuUvONsuUBEXtNtQIle_VNRXxCZeX--ux-DsQWgB3dqfgzKvIRkjjqRMKWpUBVuRkfcT8BB1FgkUlmksm2oQZpBAMF5JMABH113e208koykBPGPM21SQxA4beCLvF5YJPzzWdFyYz6IsivlRsGfXCXPQhZMHB1NQB6fBpIXlAhLhbWVNDCwJdLdMT8kLmFrML1av_qjtfvBydQ1EPQunWsD7jQvYrMKiqOMuiu9K6mITlthdtMdGmnStnIpjxR_E0OA4BR2F68Hv1WJAf4E8hSq9CHTNA6l8HRS3IKxlWEH1dcPGDhDRDJhEfimSEW-QF2_kBI5MQ3V0m78zKOy6CoIxWzSftaYelyUYg0rqOA0CqAy0UpPTu3Euk9KwPAmETVztA7ZisU-tQ3x7rLjv0sBBBac7QH2FarifCOTtNgkQKSJ4k4vcSCqhaU2Kzs_1vL4QGfAa7vx_V0An5Srws-FPISaVoI8MBH5dAqLCHrD51V6Ry9wep4OURk5j7e1F1TUQJw6RMaMJJWfqhSq2iREeunaKrFSs6EVeufCmBYiSTMx2V1hG9KoZ7xqSPKaat6D7Cp46-M34KPd_7ApKM6r67Fn47Obyle13_jMry1z7Rt3moR5x_yjIks77yqBhkRrVbSSomg1PYjkGYHyZTA5OuhJW0v1AuTcZC91v2TtWbWUan3wiYfbmwHezhBjTy3Zidb3ZfIp05y6iFjTp_iiCsWx22DqEbmMjD0ilIo9NJLh8BzCsqDza7XC3cC6ZrL7USqEcfIdHxT6jid-vtmQjQQza-8bzMeHb7Ad0KfcZGi3ucN-7_nT_xvkvF_TI64tzyQa1Mqk=",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Inspecting service metrics**\n\nI need to take a closer look at several service metrics, including Edge, session, and docstore. I should also check if the sub-poller is included in the metrics. It's important to gather metrics for each service and review their health and logs as well. I'll need to focus on dependencies like the session API and docstore to ensure everything is functioning properly."
+       }
+      ]
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de27487d2847a1df62e3c5d21",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Measure whether the public gateway is returning errors or slow responses during the page.\"}",
+      "call_id": "call_d1M3dgVXvcUFr4MsPWmYpYav",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de29087d282357eab590414e4",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Measure the session service's incident-period errors and latency.\"}",
+      "call_id": "call_UmsT6veh0YgiwcC8UrjRbEcc",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2a087d2ac0a37804188d534",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"docstore\",\"reason\":\"Measure datastore impact associated with the subscription query alert.\"}",
+      "call_id": "call_1KSWnWSVCT4GtcaWac4vlaCr",
+      "name": "get_metrics"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2ac87d2b4f0a505ea8dbcb9",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Separate session-api's own process saturation from dependency-propagated errors.\"}",
+      "call_id": "call_1gSolHrnD6p4UYmrNps1CSWP",
+      "name": "check_health"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2b887d296547fe94ff02bc2",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Inspect recent session-api errors for the failure mechanism.\"}",
+      "call_id": "call_HXhqI7vwxK9iSsJS6Sz3Ou5F",
+      "name": "get_logs"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2c887d2b545c5f185261e8d",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"session-api\",\"reason\":\"Identify which downstream dependency is affecting session requests.\"}",
+      "call_id": "call_mIPIsiY30GwLSigXFseayWwJ",
+      "name": "get_dependencies"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2d487d28fb8112af925fa5b",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"docstore\",\"reason\":\"Check datastore process utilization and queueing during the incident.\"}",
+      "call_id": "call_e51IyuYmQSqaaIzcv7EvKkhE",
+      "name": "check_health"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f0de2e087d2bcb7915798d96d6f",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"docstore\",\"reason\":\"Inspect recent datastore error messages related to the reported slow queries.\"}",
+      "call_id": "call_FZRrPwo3jMDMPJnR40vXrxs6",
+      "name": "get_logs"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0770cc87d2b26665e81b7cd371",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 1126,
+     "input_tokens_details": {
+      "cache_write_tokens": 1123,
+      "cached_tokens": 0
+     },
+     "output_tokens": 299,
+     "output_tokens_details": {
+      "reasoning_tokens": 40
+     },
+     "total_tokens": 1425
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T19:48:30.279006+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0a6cec87d29d942e9fa9cf6b3c",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_d1M3dgVXvcUFr4MsPWmYpYav",
+      "output": "[s5] edge-gw (time, req/s, p99, err)\n14:01:00  req/s=   193  p99=   264ms  err=  0%\n14:01:15  req/s=   194  p99=   262ms  err=  0%\n14:01:30  req/s=   199  p99=   265ms  err=  0%\n14:01:45  req/s=   188  p99=  1753ms  err=100%\n14:02:00  req/s=   196  p99=  1713ms  err=100%\n14:02:15  req/s=   212  p99=  1813ms  err=100%\n14:02:30  req/s=   207  p99=  1803ms  err=100%\n14:02:45  req/s=   194  p99=  1780ms  err=100%\n14:03:00  req/s=   205  p99=  1759ms  err=100%\n14:03:15  req/s=   197  p99=  1749ms  err=100%\n14:03:30  req/s=   222  p99=  1757ms  err=100%\n14:03:45  req/s=   214  p99=  1800ms  err=100%\n14:04:00  req/s=   192  p99=  1730ms  err=100%\n14:04:15  req/s=   193  p99=  1787ms  err=100%\n14:04:30  req/s=   190  p99=  1743ms  err=100%\n14:04:45  req/s=   196  p99=  1795ms  err=100%\n14:05:00  req/s=   201  p99=  1765ms  err=100%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_UmsT6veh0YgiwcC8UrjRbEcc",
+      "output": "[s6] session-api (time, req/s, p99, err)\n14:01:00  req/s=   190  p99=   254ms  err=  0%\n14:01:15  req/s=   189  p99=   250ms  err=  0%\n14:01:30  req/s=   202  p99=   263ms  err=  0%\n14:01:45  req/s=   185  p99=  1720ms  err=100%\n14:02:00  req/s=   200  p99=  1751ms  err=100%\n14:02:15  req/s=   206  p99=  1758ms  err=100%\n14:02:30  req/s=   195  p99=  1693ms  err=100%\n14:02:45  req/s=   186  p99=  1698ms  err=100%\n14:03:00  req/s=   204  p99=  1746ms  err=100%\n14:03:15  req/s=   203  p99=  1791ms  err=100%\n14:03:30  req/s=   227  p99=  1793ms  err=100%\n14:03:45  req/s=   211  p99=  1765ms  err=100%\n14:04:00  req/s=   197  p99=  1770ms  err=100%\n14:04:15  req/s=   190  p99=  1750ms  err=100%\n14:04:30  req/s=   187  p99=  1705ms  err=100%\n14:04:45  req/s=   192  p99=  1756ms  err=100%\n14:05:00  req/s=   204  p99=  1793ms  err=100%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_1KSWnWSVCT4GtcaWac4vlaCr",
+      "output": "[s7] docstore (time, req/s, p99, err)\n14:01:00  req/s=   298  p99=     5ms  err=  0%\n14:01:15  req/s=   287  p99=     5ms  err=  0%\n14:01:30  req/s=   297  p99=     5ms  err=  0%\n14:01:45  req/s=  4158  p99=  5313ms  err=  0%\n14:02:00  req/s=  4107  p99=  5213ms  err=  0%\n14:02:15  req/s=  3889  p99=  4924ms  err=  0%\n14:02:30  req/s=  3995  p99=  5069ms  err=  0%\n14:02:45  req/s=  4058  p99=  5174ms  err=  0%\n14:03:00  req/s=  4001  p99=  5068ms  err=  0%\n14:03:15  req/s=  3959  p99=  5031ms  err=  0%\n14:03:30  req/s=  3956  p99=  4963ms  err=  0%\n14:03:45  req/s=  3849  p99=  4863ms  err=  0%\n14:04:00  req/s=  3959  p99=  5040ms  err=  0%\n14:04:15  req/s=  3974  p99=  5073ms  err=  0%\n14:04:30  req/s=  3882  p99=  4950ms  err=  0%\n14:04:45  req/s=  3931  p99=  5013ms  err=  0%\n14:05:00  req/s=  3894  p99=  4945ms  err=  0%"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_1gSolHrnD6p4UYmrNps1CSWP",
+      "output": "[s8] session-api: HEALTHY  own_error_rate=0%  utilisation=6%  queue_wait=0.0s  pods ready"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_HXhqI7vwxK9iSsJS6Sz3Ou5F",
+      "output": "[s9] session-api: 39586 error lines, sample: 'docstore query timed out after 1500ms (attempt 1/2, 2/2)'"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_mIPIsiY30GwLSigXFseayWwJ",
+      "output": "[s10] session-api -> docstore, meta-index, notify-relay, player-core (all required per request); timeout 1500ms, retries 1"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_e51IyuYmQSqaaIzcv7EvKkhE",
+      "output": "[s11] docstore: SATURATED  own_error_rate=0%  utilisation=100%  queue_wait=5.0s  pods ready"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_FZRrPwo3jMDMPJnR40vXrxs6",
+      "output": "[s12] docstore: 0 error lines, sample: 'slow query: subscriptions.find({}) 1840ms, planSummary: COLLSCAN'"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_02ef8df7c6dcd9f3006aee2f0e6d8c87d2b599f5d87179d90e",
+    "object": "response",
+    "created_at": 1793994510,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793994520,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f0efb4087d2bd686f1e29855b4a",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8Ya3rLWu68ncJLK10g9dIAVp_lr6qVCxujUQrWq4v0ZLcI24ITJKpTAyPi3DbTCF_gLKIpLZzBnZIshovVdPpa9JyctB-1Jvt3PuSZDW98GuaLFe5a7CoUZM68k7tBLJwlFQ1i97E5lIEbNFN2F8eO5sbwU-VnH29qMgOc1ITJa1pN28jD2hMbNu_EkkgZCYCb0fCRZ1r6v9y5EPdydH7wnTIV2n7pxnyjjO4_qmEX18uz9bmGMReYHA1HHi3ZBpuufD0hyJ9nihkmj5p6eCCu8J2lCGk_FVyzL7Nc2KTrK2jsOOKRPrl7mUfnoA1xlgwjZlF12Si4gaQvCjctu-GTOCGeOVgBKJ3aZv-V-gg8OcVWtsuJuWxYJgi5IHDoMldahH6Kw-pSrqmRQnGlFjWMu0L-QVZcLAluKrWOTbTy4nac3IfAw3GqB3uGJWUouq2Y1mMEQhzPQQhASJW6OxHO9OaOu-uoPhh7tSXx-lt4fhIfvQSm_HW96qy4ERM0jQ5fIatmmCLpZtQ3806zFAomtVdWWXLOBztKhXCzDRo6iqbZKB3gmX4rtdTuTipB6eOVtBYSEjBNTjLg799h8DLTOdsmZ_8-mTLuRJ71SruHdNLvvDiknkIW7810Lm9btRYsvfGJXW0XgPmFlKGTFWqurz6QqKlsN5UUcRuVvYI0fGEDjZxeTGNTWMbCnzb8M96SF3huuR_f8_gwDSaA1wYD_oOgFKK-3-zTxySLepR3mhq7nK9K8nxE5u-cjA-P64YDa7zWF-W5vvTPL8vBMfTVA0YtJ_MGsXKXVRzlfro5f1C51cQqFnPKd47IVbbBUuIXTSxUKOsliMln9suZxIF5FkMdAqQq5XqITMys0V0Z9bTPT6H0pNOLK530XIlLyWmxWCqwTNbbNItbvm0mTzSmXobHoOmXFsqj9cw685W1b4Eq7hI0efA1icP3ZyyRWz_R--c0kh_GAjJ27CUiSoCTVczt5mbH6krNJCCfdOzERJXVGSrXlxPqcJ6g1l8Z8gkA4yOwo0jVIwHy0D6B7_Benjw38RTtI66zLkp-Vzg1YmQUd5n2KCOaaBzJOUnSN9zWNFJmOu-gaHZV7vTaJC-roYSnjtocZRWnkBH23ZU6FDuqpDvvmaLbvkCoaruhvpXQS_ZxuWjMfFn0XUquo4ptkBf-WbMgWm-CQLMl7pJgHvtuOU8BTqp2OiHJiUHCaSwF2pskOVZ7nffR_cO0UhSY8bd2r84Un_j0UPce9nRnTg411gqmh-RuI47soPFANPR2UZOQXkjMVJXWl0rzsGa3CdqXFfkWcPRav8TYhQ4P_jsReaWI2Z-qTfNgqWGUEEZDHgkJHxxLoMHa52JCd7GrDkag_RrNr7K3GU-MeZF5eFGX-3Oo4Qb26dkol89l_Ev2-I0aA6ehKc5E9iAB6UXnHFBE-D0d8SUGYbtbpE-T_moCwKNp6zFr1cMcosu8y-IpxTN-XfZOs4ra4sSHAhtQFNnYE2q8qnIXEEgHjI3AF8hwY5YNWDaqZfRbEyXBIIXleti3Jv5-_RrA9p7wKdd-gP1XsWQKo8FPMaZ9wmMHE205kOm7othqScpXRyJzvC3l5WpspNlWpCUXzzxluHYbzlnKSnhwYtLCQHwTEGYKD0Vgl6MMyDhkNUBJ9-rtt8we8RaDjWvmaAi9ct6CFe-M-VgLl3UXWMx6_r47w5nRhyg8J2AC0rOToM6WRl5-n3v8afn3zIbAcFbS3QiKegWDsc29L_4nQ340OmMCWrFNCKX9VO-MUgvDqtuChjylZja-9Ugr-e_2OWfT5i7liN_6yxr85Z50L8zqdKtWON31tdo7jppW80InSEyVNhzEng6sDgWQm4S4K3bsOBALsDBwiGSyCCeYSwhWImcuIdh2t4cvPtLF3CUMgbvUGBWSngNE10x9t-g0dqYxQYjSXa7pBFLQw1LUM4yQyD1t1Qa-H_S3vMYFU1gKgMYAAsllk5llyLzCkDewFIT2u26rtH1Qbg6kjJYTYs8OmQndJtO8m5BLCsBHtFRsbPRO-4W0d5h2cmDM65G3veVTFhX3Pwjw0I2AUKQIklmdfmT0MGUQHO1IJmUak2DsDCx5EDe0vyTTiwtJMqpd_FopUpirKBLrQFeivGk-uQs_JJ0hlz0yBOwZa6EHffy0e1dgAczODen8Yf5JPmpFI4VWVNnIX4epgl3PUp9dZe-I3Gj7Xlr9fhkDSuX6B-AgtTCaYUq2PqrUuBIvtII1_8Y5p2QYP8__bM6hQB98ndJw88Ea4MfsSHcUrxROa7DzXLFwlMxJlkdvliQA9yVpscbnxcZv-_gMyfRh-R7ZWJ0EGLqZIekIm7GT6GJWE5N938ipv-AzCMj1TPuFS4uZSLmtYp4nNgGR4HdftHLW-h1tjuxrVcEWU2of_nP2MH-iz14gMYXNTtSPTXBwKZxScV4bs4EQ2K5TzNJp4AjgIg4g82j-ZupDpgSEoYrg5iWdzOuv4cTNwOKbSC296O8zyfZ0w50sJ1pjv1NEoSAysxAz6Aox6EYQOUQbD3T4TUnB_6QuClJM09GcQPere5U62tRrmQZB9k32RvkkTiasqpjeiUljfiluIrcZQgmc3p2_QBBbQd_IfINcOsKE9zUZ65PVxsLZcSsMw8qgm3oNHaPM3Vr3LRMtopjwc-pHSW9aCyGv6t7S0Fv9Ueb98HplfhN5Y8W7xjadT7EugAHTb0u_lmFDQO5Ad1dH3a08AF1ysl9_QmhRcfFSUt-ZFLOCASLZUKXv3KXdMYlUOUak7QgdnwkUR40oPJlF2Y-2D8SEEgBQX-w1kWZ8DLDrGRfwQIbz-dhDysv3H_rjT8DUE-X1p5oWPMBkLsTdTcCufkIbv0SY9qn-n_pdxerKPOcxLApcTZovC7P654ZupcluoNY-FY8g8GieMYReYW5C_LCx1u3OsRyxFUafEVZnxva12QEvq3bnJju1U5giYA99fWr4ISe2iUz_EhuwTPLCK7fNrsv54rctVN5jPdmCrTfiWCrffjLTRXM6gVsEB9A6i1ebJj1yhdIW7UpoKDsE4k0UphvJBe87t3Zl0zTO1ElFO-P6p_y2xoLLxS1XokBSK6U5iIwe_jFllVBpGvV1kcXCaeIyWxwGuu95-f_cuWedmYkrqmGkOJTPZITjLHaZoLw6rmS_N3OFOlIsvPVRSTvsXlCmHJPtOuqHfgUYFQz9e7DXAoGRXnhpoSjS0SbOGGQ_OgC_K8ytR-OMlBU_TX4CYs7r7aXPy4igTVGrWV0B28sXuKAdTLgj7HMTshHqdzPpH0uEBFpV6CCfz6WiJ8iQ4x4cjxGVF65Ohjy5lrQCDRQy-FoztPTYAVBOoNJ8ji--TTg0zTBShPBEBerTVQazoS1N8sicqgtcjUktlfIpw0WAC6kMlWilbE5SYpmYl-ryAAoj2cXQ0HkaA8HdsI31kp8YHrPg8a6PZscAeYik2MND9fujMqpC4JQizeq7Rekp0_84SQ_4SBZNIppcVnWMHZ2VWevor6cffp6sZ_qO98Xpsiah0fTM6ojrNsffnWhR2-a4I-NYRd6QlXZjkoA1CYxn_M6uoS3fJvMnvkAkbq9jrjip7fODcmZCExO0hwpXgySSNN8acDD9985rDLNr_U1hbuSQi2CdupR9NNIWnr_xFs9Jpgpkf4dNRfXqNPz5sq__WQe7vXfRBZMW5icwkfsGC-5cQfwmv3FbwEF8wk2sm93vnS6lO99P1OPNN5nLNHcRAd9VXv_P_E6cY0K_DSz1L73cRmARStJpqMpfxz1r3DeIZt6YGJDXYBL2nZEEagrYk3bBsOexQ2_IWHT4H5oByCstCJrkd4GPKugg2wsBeQ8nnu0qNyqb26YasmGpH2X85Jtcd2x_LRn9T6rUzhut4IHjXeGywLKuA5puAyER3pNBEMdjnZ8WVRVBuW35XqKKdUC_3F5IcPSY12rPb584uvDOBIykvE7sAq3tLlKvvKlYLrlVdsOxW73FybrA-24zvYylABY2mt7_GbAJ36exu380WbBamVWaxuimJ23lR2gs-hCRhQH-Lq7xM5BiDEf1YslbIzuVJqLOPT3iMVbYt82SwbvWprq2OI7ky1rp41xre_LT9mYoo1CzAjQo6lPPljSVco-w_wW-lp_VQ2SmQrpDGLZLbkVOsXcf0XtwMoviWKXhlzNjTcw6VwOgmmqH7HlhFc5zLKSIKFwgNjQZU5FaBFQmXm7td02-7swO7keVkvKnG2VOxg39_OOi7Q2931InpSJhR2XnJOc4wnUo0chWQDj_zzhRVQPASLnqEHgjYahLfzNL5rsbwVwhQVN-V_4ud2xGv9QQdZDUlUNKiHBfEQsVgehH6IN1MaTUrKLTXZDphdK4MSw_5Tnrs7RmcaMinbZDnE0Ov5znkLHV3HGCw-91qV__ZW1MlGvL0c6aUuUS_qDQJHDWW_STAnFusChQGp6c5zJx3obpgxgwdYW_DzpxsiLLbf9lya6obhT-vz7ZMKxzZpWvDg0s1u14fswcehBYQ3Blg4QEFzlcIa7cmYcXkap8fVM_Bcqzv7ILznzNIvr44ulYygaevvNw3gUoZFgDqFysniNp2CG2kp7e6Yt3MUZBLttqa_bDJc1EdjWb9t9Sye6XxLn3MZ4RH_cxe9SpGIKxvqPXmoXC1Z6z0zs-v_ShKP-_wKtmGkxfoZJals7cID8egOAXoMaPq056HhaKJf0WIBmVasLY_QQhOEKfe0fyLcmzaLC-CEv1m3nikCld4ecuwtrGxjIeKfCZodeRkfQD69iNcSQoTxAJAE9TG0HP2UKGvmEr-GZmtu0P_gXttl_cR4xzv2YcQv38sGXzKB6klp3uNGOQCKUo5qWDRo2zHgWKZKdtbVeHlboAPcDzu2oNndPO7NihXWkYo1pjlqXRCh0JcsvJFCNu1ETWM9vdq3dWzFXqZ1boXzag47zW7n9KXJTl0qOggFeAMLKfn2S2QsTrVWAPeUOgd_gL-LZAbf1r-TJe3dn2fyL7cWhIK9ZQWrskJRiEsdqUllHINdJ1mWf866INFDAHmtPhBpUZSPhAnniktr5UVyxyVeca7RhwxMKb_k-znYkVPeIHTobZzQ9KmFuFVznd4oPVqktuwDadVA7Pgcp-VXrmpf9EybvNENTGvJ9nUj8-m7kvwAdD1Zylw1ehCVjqQsAryqx-FPzdS-nzpYgiD5mHmnGxEP9jD5IDEnsqouyMLsZsBuhy7g9cuIZdyViwmKSsvysthWF-KQaEos3NhuKbojNhFh24FctICzXzeiGzZI-0VAbqGpSbbotzc00OjFzrs6Wo3ZjCu8cvGnQRniUujXM0fYzzInc4nmjdZbaAm3mXq6IEhLbSMR3EYkkiA5xtuYp7p6z5Wmzq7yNm26nbkuL_7iXbBetC7Z4fV1yF4b7a4Zihq9JLRxxde3CUNUEjxN0EcO2ZZ1nd5txnJiYWSKIDFciYaQjY4M85UHZXqVEUNf8xHtst6Eh7Vq97H-Vd-kO3-ButKXMftUWtGW5zPPN5dYRkBtnnL5eZUfSonr3gTbU5caWCuTjb6fgiing80ZBeYNDnryFVqmMntEHFHRimFuuZWMMCbYulhbxSgZvWkIHwBuxzIiuFxxwfnxlWI7gBSvxa5gKt3EGJL7gKLqgDA3FLCJK1RXnyZbFOg-Yp39-sarzeoDvUZTYvjcaYTCvKrU6F02CxHYOM59MLejJ5nYD2AnWvIvUcPbWZnkYek21gNTMRjFRXdhc1d7bNMMKYa6vNtIggvaVkCyS14a-owef_MlW4sdpG9r9fJyLOHiXKkyvfCpGZtr9QOTmf8n4hpzV4xhtJfyVf--ZL6mdDOcnYg9iDSWs5VudXDAsXf6P3wpgLhNuUNmLJm8THFL6P6Xtq3dko5iE2c43jO1AqIMFIb3ksEaq6t41EYP63iRIE4T4sdFRdTA0dYgWsvGzoAG1GAqN3RChcaSv7uCtE25QePQmW_bD3jEkbFJ1rNOA4Mzdm6P16N5pbPszafjcGvZ9NpLwmYHEztncpbUcHP7xT2EmYsWqKGcQG5ghrPKU1lAuw6OkT7ER1tgVW7qv6B6m-PdDn7Cgg4kGNOH6oIjCIByOLjdcxWgRJ51agKmUnjQ_gfSbSJILNR0x4Q4tg4sbutsmYJNWY__lTI1FXjpGbkEzvbUbzrlVPkvAi5wIuIHRcjIFR-QI7xsrLb0ZTMnHEEUMTf7VjsH1nybbEhKzPfdrvJokW30EWA3wTrz5xJbo7PhPtbIVzkBhAMUjYwZOHE-rdgxUOJibBF7pY0hh0p1zjCkB8im_pPrdCHImyLhel5vFskO5gRuXP2q6smVRmmCgX9tQYtUb2QCJPR7VQKAmiPkAmW4eDtzSdad1gIg2CzfHthQzbZAbWn50MzBz9--HD2fJ3PGKUO-Evkdnt2bzBPXwIfSgVrm9OB5mSdp4S5AwqVLPpQh9HgZuUak9cl19Twkuya2GI3jm_zoAtLWY8_XRu5v_OXtqP0cXO2AjVGN3pWCfOGOunp8qKee2kUdf2Bj0cUtPulhBedswQB2tG-KA_Ldv6FQmrjmxsPnjWeBDnvIckbWWDHrpm2kDEaNJpnYxdCESTBBokLvxcBqX-JYadMWquz3fFE7dmqIR3H37HBxCKvC6B20xOtLwx9GucovBvWcO6M9BAceb8LK75kgMiTk_du3sdQOxN8BV7taJdwKGvRZAtcun6jfKZsY8Tq4Riz5O0o5GFoW9OujJu4iEfgZBVI1Zcb33J7NPXrrnjVkWb3_4njl1i0zh2bkyDJA3poBEG8Qzbx-6-sIn-Ug1ZYoole1_oADrHAispxEhWxRLiGLR91gYz1Cv2EY_dSWOFbs1gPTchcml4Z0asaHN3ZiDq5JBqC2HeOIGe6aBRjCasMu5AFz5dVvYjRFBsiJYJ-o0gb6WXnuwpoSbamQzXZMrGzUGwxo-wog-NQk9xFLJCuBjxGxUeqE5cA7QSbIppz3Wb_AIV4l4FuGo8DJPoVvvqZEHc1unYs09Rc_8ELZe4hxKxgSLLjcxnTjNmYvt9Hin2m_gpi8B5G0ByuHH61ORyoQ_KUufp4ET3IDFngSW9Yr-90HeBQvLH0C5cYYhkSMQ0a2M-os20nSo8saDl0jowNMS3vt9uB3nhQpje9c9ofWBu1F6mp5lef9ppQTrf455cPHaGswpjsQIgY-qMWU4XurNhGQdd8LoPRDMI4lOvBCvpiFJLhK2aM_fD4wccfkPw9m1QJt16Gt0Dlkfct4JwjqJ92wYj7VLB1yUUnUnJpgAKqR7ELXofcsZnWqYIGD5fNKlTnsIbuqr-ulQIGcuKx76xqNpOjsXE6qtK2x9SZSXjkdEPDmhd81u6Dr4WXybqF4nRcI51gd0TlE1CbrcWK6QniT8-RHioYfvY0XpaGS9H9laPyQNWPBNZd89A-F286M6aoT8CIjeCgrbrdO_mtcvqwQ19nbK9jOywnBwv-TLNL8KBqe38VVIwFhuQ6Y60oG3bFVwmq_PeLnIKI8lwC460nEc7jNBNTMOYUqWn9tpdf-m2TeFdkBsqxmpnbTEcp_RBwbE4iLAuV-M_DliJaqxfPztHPl7HDkS5vSFPMa6yQ65dNvFw1SLqeT9O0YzhoEQhGpVubMn3ic1aSBGiIYxr1PakxnGtQyQ8rQcxJXJJGXRdlYnx6yhGCngY3Nxa8NxsIlmof2H8hBNcLgsXgLgPhzVU_Hcl8c1fC4x6d1ud40F4ievpIRkn3fn5F4ZP6y6wo2MrVVc_S1BDh-845nISMJVolv0TQ1Jh4VPIdQb_SZQOFu4X9KyIDfHyt02i7C-vG9jGfDY9jeYFqz4KXkz1UVPYIQC6w49wr4q26X1S1-Z8CugSXPl2Z9P0XUvjJGy5r9GSeHPDIdhOlGHQv46vobxq_Y_uNez7_AwRV-zRT7b6j5h_o4FjeKb2G-ZBHcnATd-zpZqNHOVpMGL1srxRt2Voi2n_5rbiAr_NeQpVElQlAipidqieBf5glRwncPF6mL7u6sAugZXjE8VIC_5kc8OR-M6jwEr6BhDJJgu9X9z_ZpndrhSZTos-RYUs9Q==",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Assessing polling issues**\n\nI need to look into the sub-poller that deploys polling every 5 seconds. It seems like I should revert its configuration to a previous 60-second sync interval and avoid a full scan for each worker. I must check service dependencies, gather logs for evidence, and diagnose the session and docstore connectivity. It appears that the sub-poller may be causing issues, and I\u2019ll need to consider reducing the polling frequency and restoring the interval promptly."
+       },
+       {
+        "type": "summary_text",
+        "text": "**Investigating root causes**\n\nI need to find more evidence about whether the docstore and its dependencies are causing issues. The metrics show total requests around 4,000 compared to 300 previously, and the logs indicate full scans. I may need to look at other impacted services, particularly the session API. The sub-poller could be the root cause here, but it\u2019s not listed as inspectable. There are claims about errors and loading; session API failures relate to the docstore. I should check the changes history more thoroughly."
+       },
+       {
+        "type": "summary_text",
+        "text": "**Considering sub-poller actions**\n\nI need to think about whether to stop or roll back the sub-poller to a previous version, specifically v1.8.0, which changed the polling interval and introduced full scans. I should roll back to an interval of 60 seconds and use incremental scans instead of full scans for each worker. The current change indicates it's set to 5 seconds, which is too frequent, plus possibly creating a backlog that might need to be managed."
+       }
+      ]
+     },
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f16e55887d28dc91b9b3b83cef9",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8Yzpj2pJ1k7sfmTEfiZpqQ3tiry8j4CjjCsAadj4tLRGl5Qg-Eh-dAth3tOOnJxK0GNT2qrtkuVcquUYEXf7ZzSoxtDuaRqEfikWJQejC1FGiVic4REm8r26QJbV-8DrS_FJ97bxDonzpaag8haTaIuIWN54xImpBvlzx5Km_YOUiRNARJqaf0JcJfgyLiCRZvE8hbna90_yXGRhrmPM-KOw6y85AIewhc2P_yC73RiJhSMAbT-vT2zIDHL11uI4LhCqv-tino-FmamyjhGrbAGSF_IIdI5ZPC6A7O78RocLKP21jloEyREVr-c2HNXRGWxZcuuelMzCQJVYLuRld-WQIqYqXhrcq297ppE-savB-yKTMSg9pyVSL6GLrCktgaSHCAr6YkNRAEdvUeGLZuOc9V3yZVq9wOPtDjC7zPifQHKfQpbReJrgzaKZqdVzy3SzYECs1K69yfI16kCRHzuur9v-_3jwBsBAkjbYPTJJVzyFO_pPs7AxS-rWn_k5S6bzdYRRHIDwYJ9DRpxIsY2z_2sOQKkM3FkO4TK00aOPHU8xQFOc2WKEAoF9vO093TLpyLQZhL3f97gA5jt0pDP6Qj52UpVGIMjd2pOkaPzYsUTSDM-wh_AFdfVIkLG5Z4RTFrRWQH2e6hJtgppvNpnwW7_Y-dHmSu5VqCOY-RBPUS3X_QPv0OUGP9OTMK6vyA0gmcurzALUTxmkj2iHmJkd7aNmxKIRBcQrIICIbvNVmpAtGQv2TzVT1xckCndk-k6mlWPRnyUaphEP2L4xzCaRqrT0JUMHNptFamQwI8M9SRtG2kACPViHkhr7WA6-6ten7GArOsOuzrOMJKWnF11KkKRBYSoHmG06Ty0KR44Z_GttvKJk-BvHK357ZCeARhkwkxSdiOg47u0zefMmR8ZeleRVlIjW3km4jV8rHUJAZlT1iYRARxdJ1zuVJmq1BInB9OPmldy8oBrVQ_7NB2C16jl9zkaizRsgroGQ-7uHeVaSh3uwAsOIM4p2tVmiBznVQzTa8gE8svzZXZKj4YyIolnPI2CDBvg1nWNETfohNCeGIDyb-RO5bqy6WqH8CakzCDgAdF3r3VHrFaVqCNvKHLi2j3QJPGg0kFAQVuKdBUXlqbY0Qx-1T9YKh_sbP8qe1FjgMc7xdx27bIHXcuQ-HeIAXD_SJR8LctvR6PbEPOYTon5ZfRPQT4iSGGCXlcNzcGVMl-DppTxUfpOt4iNQG49q-HIbETDziJk8AcVfyncDIDKKKd0y6MG5ghvUd6X_uwpmAlqb3-dM7ar0vzawJj_0WgKiDiOAcDqzI0hcBf9qX-fp5NVDOWTPXxGIeiMCqAtAkdlARvpMzA8zVaW73CujIWeRoFez52WQ2Id4Uy_VxpIUQ4yUeyTvCylOl56S9PFH9kqDsv-fVWvhdpKAQZMzuB2rG2I9RD19GRn37klstqtI6sR_4jFGkHIMt3EsFUhuWpdEDOGG7u4JDpTsTbxIThUqKHQP55h26x_QpSI3i7Z2WPrpkUlAZWp55CUW2XenfFn9QRMWHZD3JCkBvW6P2tmy_J04JQ-ipk5fgyN_5_3WlNaoy8JrzHz3QyLD7sZcB6q9cne5T2_yVjnQy6r8oa5ngfsFUTcbYM2PPxoK_Rth8p2uEhaP5S1TZLojLYr_CYlIlkFR3jZqska0jdzOVpsdJ0fhee9tHdNsXr-9nldnZIT6acd-YJkZ_3pNEWMtiw-5VgDondllZfWsDVM84uUEyYKpk2Bswg9PgfHKSOOSaqXL5Ib0Fe82o6jpCG1ZIbAEOAPzENHPCDNJnmiqce6g9ujNm8wvYd1gRGXkEG5EFvHuGqJl27Bg-6WXoR2C_x4em_obkM9IAm44Jg5qmoaaczH8uslKqIhO52DMPjm_UE9VaplQoN-UbDaj4ZYO86mEd37-RveMc6g1wzc0mH1qiqp3yCPO8SgB2V10cnimV_DEQEAIr2UhIYcK89vaAE5sEzL-4k9j64ugazSEKEI2JKbW7ndu0JbPfB_1sfM-ErBs9WWpUjeBk3yHWKUQA5IsTTANpatO55rAWOo7qbVPFeNCuY7PkxPz0Y4Tk05xf60SxZBn-NWmGpCOpjqMKLqgTMHbc8jF-dFWlrAe5DVdqgVXAxsRZSSAhpIK9sspGlbV5R0qg5SCQKjNXbWn1M4XTZtTdSuwMvraV565mz4tf78yRXsWjOA8IJxmTtpYSGCVxTJdZ2KMv3O05RooLn6bAe3kCM2tDKaRpWtArRe7catyzf4zk_0S0fvTihsAc7SK13qHKnEUOJQHOsElIdEJv7MK-NYR7Q7Q1KVeT7DwVNoamsjK8Z5grvwRJDFhBMaFh0ITly8YEfgWMhnEp8GhJzb8hwFB-BGvcN_RhVs_xJ39bGNxr2tNzckJGxyOpTBFIHSL5peTGZvI1hAYHAE6qTg1pmqjoVBSDfcXTCCk-fF36w0RhxvAzpVLsNe3vHsEnOoTZzQ5YJDC7l1hufkCuITxzvinTPdIUs7iKIWeCk6y5LE1beM9Dow2HOZo-TkUxnscxZ0PIHh62OCLfHo3c3xO181fOcu-YqkbQk3NSl6yzkX7aqY0DcQKOxOv75Gl0hmhQ4qZObmTZhmD1AONHtR33ZUjzg3mDURweLIbPTmUxDe3OpruySXGXEL0DNy49RtIwP37e3h3qEC8yDUfbcodkZBezA54P0exgLooijdMsoYF4DnxviIHo9_46IMaJ6Xhjn1BYVp9twB5o_0K5htreqoYg6qV0PBiPb8r5qrCRZzITDK2iVXml0s5E_exZ_hYxOQdJhLxYLOuB5WHWgINej_5TkuSFPU-j3xOnDoCuC_Jl5ObjxL-rPJNs0O3Ty6nUBblRtKCw3xNFns3GZlzlBUNLSvLS1biffGh9tCPUKN14YTv4bHJ9gVGXQMp4nlDCjcWKYjfBfpn0Ml7O6OoJhKns5rYSTc504ex0SDZGfe8XpjauH3YsrHtEyxMrCKFyFspXPEeyobbvCVP0CRPFoy5FK0UJVMA3e7SW3uVIJp6c53K5ltWxBZNRX3-1rI5Nrtukx-Qjk7YTLhJMOuv7v_isfMVRRaZJkKPLT_cvQeGVKPDem4cJGAyPxr1tb7fClAL4HGICE9LAYAsE3uQXsEWqR_AzFXlJXFeksXoKjR3aC_VuIIKBin2Iuu461EPLz_Xev_EhFBO5aslyU3cm3mqfHhS3If9rsZG3wRq6vgd4H34A6mvP7AbwYnU70L8IjpLd_AMgW2ZLQhhY0KGptW3glzZUxJjfMbyiJ9JCywoRGHoBIXYmKjYHQ1DXm1GE0k_XPQiqPRyHIS9IT5YPopTWuOhN5je666llF_cyAn_LdltINFm7ozmFnf77PIg7rCLKy4jheCKfz0tL6QvBXtaCMM0j4XAItE6WhTH0rzPlpu2J6jxvK3c8fDn6M_tWnt33OuWWeeE2VoJmrKJNQ3lgWb846Q2tCefsPQDzQItFDMqDOeX-zGXFGAa0fUZgpEzbfVjuHuOnj_6x-P17GKCPufw1xUzUCxSOYKX3qyQZMbdS_rV6gLvx8-NevEGNCzX-Hb_03PPl5Y223lCWrNG84m5XKPYfja-VCeFpobSTnzhsTzudY4pDB5eVsnmGV9iHP3jHatcc5Lc2CugbVx2QTc1FHsncjtRhLLG1miwD0Y0MBmr25s0Z5qZn1ouxsWuogZ80NbOeP_S7cC2MyXIQw6pxlryss53OYzFWvhXIk2PuHcwrRr0NhfPXrUC76P_AmXGy-ss_rAQrHn8tv03Q51OX-pHMJnrDFSPaMossa6JXSw3771V05ez6rqItbKtz5jJcmn9PyXYSO-6g3sFsUoONY1IXoGvBEI8272Y3Kouicb9tJCoSvS_25gM5wvfxaOHy9ZymrlHMQHPbndm4YulHCz8z2AAPWuW4SPoi9B6aHECUciKinQNSvc5qNywtKzmZBOm0uoprkJ0vpVIFGYQ_HzRY2I17skoMMhsLbc_w379jn7MQXMS9rNcvb0j-9dadn00YeyqmlK67ywJcrs9e6qrZcC2w5nsX3jU_b4wBUtNmchTrL4FB9lzZwxjwszmQ5N6TXDKry-YNpMysYDWN6gClnpsxaIdDm7HuFszI06EzmQgIpyOvyGLo6WFjiZwCsRM9TdSb_tiuvPV0RVIHHmIfFJwkWfojuzqK18LnPGm4d2aY4mYBCRr9reIJXvjEWPwQbQTxDVcOK6oHpJlkRIOJ_lU8TAW2qmD9AVrzYpouyqIEi37TsMstzBIH-dkzduseTHf6OiJfDVSX9_wcKY_Q9PYuWWO6YiKxdzhjfSOZ6q5zC8JiAgVorLkhDyUrJAGyIjmvQT_QYlZFJ9fEGjTBKqRoiXEHHbp6IzGaF81Jj0o3fEU10wteSJmceTZWUG-iw8K7CXg9fj9xWx_rWHR-Ap9B71npzCpH7VNJThtx_eQloD5UtB-whe3q_q0puNrgZXTbNQxjSoIQGlLmlah_FJosy77arGVwffwFBRqllkdhYwROL7_qr1V5f0IgDQ5xmpDX3fcFGVY6YZu3KBJaq4UpzW6aYyzSsbdJG5gQ5B28C-OTOdsOa9UABJqdp262li1davRlWmekWhvAuN9dM7FGdlq0S-wt22EMQzSSJuL3XOp6s58W51v5tKHmy62HyHt9OJZk0hUxuldK_t-bwBJ7UopK8ZYP7uAHTlwqFd7HOtp-sHWPZ9NGqRM33t-bp1RI_fqXx-98L6lqhXF4hqbegEWhmyLpVrcAZqEd5QC2ODmkaDtuigqawDvmhnkCh8N2o8HW9Ty2XtgOP226rKGf1XbmSoGaPx66y49qHUK2d-cT_dP7La8Y-rWQR4vV407cVhTtGlk3_Hk6tMXA3ohnkHEKqp12Y9QvNgraPCJxIsjzPfiZ7GdCLmx2zWytCVEnLUmmbiMZitPZRStKAwPK03JAlUPLwU-8KMcJwIvKSMqLnd3xtwr59pCclLpVREuKAmKxBajR90a5txUlU948ybjCRliazzZ0bjl1S3R2vSq6J4WF0K_rME8pH8-h3cDh1jmO5vxtsZas9VcVICEWpyWy1g_SYn4g0uPAfrF1AzeVLAjCUekcl7jUk6p-Wxwtlobju22pVR7rkBmtSYb7bsdScZWazt97_RJNmxfdHYfCWqzlniGJiX2GJyQ9m2_IfEZobLijnaXjNSNdC8XXSignF8J0u1W52-PCvLg3Q-BFM7u8YKTMmyx5-aUrpD63WxPc34XzlvBeLqYemyRs0T-Z8cZ9afjf4Oxkh0kJQShVNtNuBCn59WHrcVg7OXhR6djM_BX0LyQ_A3vIU6nD8_RRu8sC8qtEhE3Ubty4vQjL_E3E6Fq3IQATYqToDnThR4QgjekDLa9kPy_c51IH1sOJMvu6Ruu1uBajlwch4Dy1U_E0U8TkaYYCw10FVuQq7SvBq2MSkfZQB2SNbkJd4bunB9ve5a4LxENDQsZDahgS-IzuzWV5gU8Q0eephpvODkLA6E-ksCZdaaX06ERokCtk8fYPSH8oEma1f_MxEg6qPc6NqmpgeZ923z-OGhZQjv1s-nHZOnwVNcwEmfKFLLU-FjOqPvZDRWXVNkInVcK48Sbw1nMfAi1ZpmmsZJEyitF9Uc_IK24aRkXka5t0dy-NZ5bIGhNfNOlwOqB7RDZfqcvg8OJwgaVsR3riXHUTgZ6e9C8VG28kKNDe5BELzchlWCPUpFy2ii_Lf5_Ktt-pfi3KYSFvVVltA7d2t9QHqPRlRD8p8PWgVw9NP6J2tBk1q0hGTuP5oyAw1zGM7tqITzgAXcR7VzehlqOGUgtq6Nk-8v2BF5qnxyy8OqXK7JY8Af_M0zaNvn70zi-wORpAFJxaPvWFBuO20eCjWNdqXL6pBmykhuSn3ioz94jNA2ftTqOwWcdamC7bNWg8nxLhldqmwB6aX7Ue9gqH5DvRiXqmL6fY0b-r9QG8om-KpZhsTWaqlgfUOGUaR3Je7p6GThhmiH_-e",
+      "summary": []
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f1856d887d2be77f2ab72013bef",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Confirm the gateway's own process health so I can attribute its errors to its required session dependency.\"}",
+      "call_id": "call_sRwiGy0hKZtnEOWcrVqGnSUR",
+      "name": "check_health"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f1856ec87d2a895233acdb4a100",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"src\":\"session-api\",\"dst\":\"docstore\",\"reason\":\"Verify whether session requests are failing due to connectivity or datastore latency rather than network reachability.\"}",
+      "call_id": "call_rhgFmKeKt5ix2QOFfn4F8Zgv",
+      "name": "check_connectivity"
+     },
+     {
+      "id": "fc_02ef8df7c6dcd9f3006aee2f1856f887d2bece6287f1391802",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"service\":\"edge-gw\",\"reason\":\"Check whether gateway errors are being passed through from session-api or generated locally.\"}",
+      "call_id": "call_AqbFFwNSu1XEQd9lpFG1jspq",
+      "name": "get_logs"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0a6cec87d29d942e9fa9cf6b3c",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 3091,
+     "input_tokens_details": {
+      "cache_write_tokens": 1965,
+      "cached_tokens": 1123
+     },
+     "output_tokens": 1005,
+     "output_tokens_details": {
+      "reasoning_tokens": 869
+     },
+     "total_tokens": 4096
+    },
+    "user": null,
+    "metadata": {}
+   }
+  },
+  {
+   "sent_at_utc": "2026-11-06T19:48:40.841396+00:00",
+   "request": {
+    "model": "gpt-6-luna",
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0e6d8c87d2b599f5d87179d90e",
+    "input": [
+     {
+      "type": "function_call_output",
+      "call_id": "call_sRwiGy0hKZtnEOWcrVqGnSUR",
+      "output": "[s13] edge-gw: HEALTHY  own_error_rate=0%  utilisation=4%  queue_wait=0.0s  pods ready"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_rhgFmKeKt5ix2QOFfn4F8Zgv",
+      "output": "[s14] session-api -> docstore: 0% of connection attempts refused or reset (last 60 s)"
+     },
+     {
+      "type": "function_call_output",
+      "call_id": "call_AqbFFwNSu1XEQd9lpFG1jspq",
+      "output": "[s15] edge-gw: 39471 error lines, sample: 'upstream session-api returned 504'"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "name": "list_services",
+      "description": "List every Larkwave service you can inspect.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_dependencies",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_metrics",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_logs",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_health",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "check_connectivity",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     },
+     {
+      "type": "function",
+      "name": "get_changes",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "strict": true,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    ],
+    "reasoning": {
+     "summary": "auto"
+    }
+   },
+   "response": {
+    "id": "resp_02ef8df7c6dcd9f3006aee2f18f4b087d2b381872b51f8ea05",
+    "object": "response",
+    "created_at": 1793994521,
+    "status": "completed",
+    "access_programs": null,
+    "background": false,
+    "billing": {
+     "payer": "developer"
+    },
+    "completed_at": 1793994533,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "image": {
+     "context_compression": "disabled"
+    },
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-6-luna",
+    "moderation": null,
+    "output": [
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f196ebc87d2b7c1abbdb0c1efdf",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8llhaCh0pyC8rjifDoXdPmsq63eLGV68S0wSY39rVJU-5RETduloWdvm5kJ79-CqtJpA128TZ6PS2AKKBy2tKw2F-Ac78DOzR9eRRdyiyO-qB0fWRP_8dqIatunXDo_AgzdJx7hFCrd9VKUrOy25xnl41JL_D-UzRWO6aIeUD-EHzVrXr5Awn26Wdv7U0vLtsd7jwUl6q8Rmxtki2UWJE9mnTPPYczc8ns2ZDJIZpyyXHniJWygh3VHMw_qmVeJq0C-DFVGQ2F0VxOuMoTNZquYGjaoQAFV_8BLaNwLuABMFC4-xKHSttp1E2SDDUWyiP8Aw1l3sSGadjSyKZMoCUZdTutCn-wjh-mmudIkLrkZgXDIGL7CaYU76o6Db9aKAR_dWtPNiDYQzaB-FCudV8CKDzfnDWc0IZIjb05WmjhmBjsrp53vIxXqeTWVXzmZV6OVV36HvAFiY2hh1r4wBestupzy0428e0NmX6e72B6D-xiqjs8x7BSR8Isp_JdmwYPiAjVUORrzyBSEo_7Fu0tTVNLpGLlSVpAEHWiwzXUKJ7PkWMbies_U-AQdElfGyAuqFQyXt6PIrFpEXrJtUU5gc7w2yaVO6cUMzV13l5p6LpBtjsp4Uwrha_PTx0LNRGD6C7iGeSdIhx6VFxD2nykldiz0BtoVmh4koddAoI6OF8rl-WLkIs6C-tRJFOk0AQ2e9YFEFjsdFbM4A2Jy4OM-TSOFaW2afgUNYirBjR_aZwkHWjI9lZjd-_E_lKhMJvWh3mH1UxOKtx3FVenqQ3hgWVt2qwdb4HI6TSdpYTIoTu4VzfG_UkdtRZ9oAGLA_BGg3TGDPLeVX9rDIWwFcUz25YDy9ON2HiLjOh6Cw3avdFYf_zkyUCLK9I7O85LrwOo7nqqGo5VtXPSA9AAcnxX7wepqguIoB30-SdaKh4rQv6s2xy2FRznAj2z8eeVE_sy9KOLbx3iVS7MBOG-f2tXnGM0soed8JXfmi1DxO5UwhiEITUsBcZNpKGaBtRAs7ljMKuaRLVr46PCRTP9nEcUS-UWN62Jx2gt2BhEfgHyLJOmtnCI6Yox8vR1uIdM-GkdDTBfwFFKk36rN4gfwD7LbIYgXZL6ZQd0c_-NrQP5RgfYSZ7Vdm_FudcEUdWrsVVP8XRR3U66tA3Vsfb43rpvFBChANGxHHhPsgynf4WLWyRzuGTbtbXpxBdWHcu6dvziSDKWgmohyVWKU4YT2Y14aiC8QfF05C8bHJtF2bLbZXqP7VAB8FO8o2o471EEiwVJGdxkkkKcmIaVmLHx8fTq_r3xqJ3Pb65pwB4bO9NShV8K9LyE7DwcIyx0bO2d8aUY2ZNpPrkzvllAuXyuCfvCp2mkYEqwnnttoNjfm0keZ-G__ZZVd5O7ADzzdAjo47inE6oz0t_6LRY6h3fHw6awyxJvtEGhusmicw2lEYHaY55Xu240m6BjNgDiidNGeO9z8a_HXK8IlY6tMJ0KHRYrksKBIjZVaNR7g8sTrlpH-CJSC0mI49JFto2p2r10ToXbmmzgee4oeQHslRcmajHtBolspkeckCmvxjQnHJpY0_K_U-7y9EgC3jrwmuZ_AU5ZShQlik0s0kWz0EqSoQh6X9nq37EgabaMS8yKzDeTrDiQ9rnIOY_8YSU_eiza10PlNh9xc-7XTSVZIfZtnEyJ_fubPUXbJJuFnWzPX9X6E_WZVanE8C4oNPMZiIjiF0deDTXEasqInSpkynW2OtrDvywvhZCEq0iiCooHD2K62ORa6a3nUXpQXhvLp4AmHSyYpMPJvdBy8PU3N94WNLM1VgrIXWQAcnIuVmx4a5UocJXia_56oefLGl6Xtq_XDmtkCVOndxKonRZSJBIIyPnYNOXY9Da7wnt8BEvAgZcZMyZejMsDBmM5xIzNSbBT9mAKoGhVp-j_JMa4Kw-omFOjrN3bKgMLeR2Tfpru0Duedpyiv0uwOakge4aZ_0F3qaIGhb_vE7XrZ4SU0rtxJicbFZOK5UQycGms2wNn5M3VMTEscKGVotx7XVqXi1mWtwXT5TZHgjiWTzMdPT-RIYfnInryzN1b_S5_cjcn0czxVcjt717Ikit4zTB-8_DsyjMOwIUEveHghUX_PmCDlFfrMNGRfnVTJHipJtSb3rUWrUSbFSAJKd8uytm7bDJcjVF6q7NnbafQ0s7QtIVtFk_PTxFfkDb3w6DkLvb6f0EMGAx1KqeKAp9eA4tl2UCe7LU3Qbk4j0CMST4D2Yx-mGU1fjuqJkHRAywWsD61kchKmG3vC9ced79EuGr8Sc-kUSRp3thNeiw4cN0Y7UlMZrjBj8LJm4CVBBbko-vlIZlgmWVy4lMwC8ncTvOQ8BjuW-Ehs6tHvXITofDetGqXOYjjRkzVv_z6Y-Dp3yebMF-J9saQ_Ge2_BRbJgRuNLW0vAalxFl-OSu0Apejx_HBeZnTmNEiRxKZ1fUf7eXESqUHBh_zYvU5OEQyUNsT-mkiaAYE2K_dz1Bhg2K_M6MDNsbgghgA1zpUv2w4qKbiuL8-w574ORtAXX577Y1ChdsztOr9MlWVDk871MOOSDMVU6W8xc5YGLmZZeL6yyNzTDVv9R2l5MOIoTnvuYxyu35_K6r0Aof5Rb6F6iXfcFEH_ugyRkCE37myg0wev75CIyVKNIbCXDtu5pQrPLefrI1EOLHDl_gwHMqZQmOcwFamx-yF6GFlBaniAuXZHYHVp9yHRZFMV3_RSh4Ew30i-vloi6UaauEyvCGAu9l0Gz6Gvjr762mzQSuyxCA_K2yYwMCeGwyzzQhiC3rFSUtp2USVL9TKLaDAEw3n2Duq4sxg2ToL1NpDE6OD9xdGv1M_iCzHWE_rsNefTunfTVrHlg7rHgK_AUJpL9iaO72Z4z2KFQT8US75TipaRJEf1UfXhfvZO2BSbuZMedCYoHKSBXrn3HS5nQqSjQ3IprEZi0bfz99B8WhVar8ASWAA894Wry7yRu2ssyB69tHE7w97kMLqPP8RNQtQTU-37Qpj5iJo5rr-HWRzT9vcm-HGBA5Fh9X7l2Wq4SVPTEJZdlhOrsfNn4BeRkkMBG8CJokTnpITnUETVKkDtTGIrwke6DP6sTepnu7WyxD8FjNqp6IQK3wAsMelehYyx09P4Ppi-olg5CJ0VMlYnsZ5qc4xHN8z17QMPnBg1qA8u7pdWt2CEcadKFn3gLLnWtXCdQAyCINNm2PM651HRYVbBS4MEnMxBtQAPxc9UVUr4Ld8f-AcL4uK9yB3MYOg27W9FPexX7rCfz3l3TNxjG7xL96KAJlB4l5neWq8AOhQzDbXaxGj6QZH9FpMH9I_3CVSfswEYt2ALLyB2Ju2Eih9_mo-_M4lS22jFMDcgeKIdsZGn4lvOUOW4EXbwnpSqZ__FFIqwNm9M-DcigkdpiPZQFF_ydUg6Tz8QdgrM71iqWooTMceOv-k_UKHV7EKYLwWlXJAyEYRDPJXf-VXPZvGBFRvOYLfhax9539RrUUmeHYT9QugRucLajRmUHHGDStbOZBCrbMMcZrJ6Rxf3h4RiPJOKEXNFmpo_zCxEz-yNVce1ize0ZepbFzvOOdHsumlhU9PCM8ZgaQcvVvZZhT9NzBcZr2AqZlBxG1wMk-Lpo_7-cJq9vUMzl1mGuOXX2QJgP1sr3Gqe7QyqhCj7VW5aO0nS3cE044kG3z8drY3RL5twqzl3dbWKmfOUXimfzBENB4FjBvD8EvJEXkvM1BorJwPEJg_zZJeh5znPICBrtwc4sxXJchAi0GwRIkAQozCKs2EaVe81T0XdiolNTEySCI8zskHocfDdVASV7LBfpQQzjVnqxirvUIXr6KkrtVA_WX8iWMY6TEnPpMdJMqOR3MgBoBRb6Y_mFE9oSA0kSznKYYrHJVLkKXW_3JnLJSPkwGHet2tiDWvR2-bvCJuqeQaK7vvpSOyUaia_Q1D52jdbqsipyY_RYFx8rMEXGPhdeovKdueKgxTCtK-RiMVvaAkVnydSyxfGtXMAnivO7MjfluH3Uv5sE87R4OXZr0cS6Eo0hq_VSUFmIYMjZus3v_S6OJaMneX-_kUTEj2An9gQdO3n8GWPWp1mCCiK5tqi93phQgm6Z0MlcHQbp7SbdN9DHrYxZjh4S9UDzEMgk1LOatgxpBkfiX1dKCLm8ilf00ZhF2GHMBxmMc5z9CqNSBpaGYX0tz_UhlDfSovndFX9FEUQFxHawWpdoYkfP9Mpuhfb4TiouwKOUJ9i9tRjYZcD6xEyXIlkSJTLIsu7KKgCzgN82ec_R9KYIBu2KIVFiynIXKOAgXgpTmGHfllgb50UpFv5hycbbTWXd018p4Ro9VUTUFaZfIzrr4bVBFpFrPj7tWQ797SvcjH406YX0xVrmkgQk2TOFpimXjDoMpDVdET4-U3TJl80jyX8L9divldaF-ESZ_ikneqnolkG92Pt4Y_Uu3EyF2AFh_o4ZvrLl3Z16qsDN1zb_YFwq0DnAV1w7wdIrsVqkV3JaS7kMX9cqWQPtAsGbpu1bGgrAyTPwKlB_WAMtqeIHUZtBAWPeO7nxxTYtS2nZg42CdZqhGHbtCk46VfsmMW2hJGbPkMF5C79AEbbrTE7rJviJ6KU3CIfntfyJanrczZqBSVpdRim4SQLDi0b1uG8eo-oYRPnAe6JiVl8C_JZ4v_OtVgeMhx0O0zTz3yKVHkw4obgyOzyNDm7tgyCl7y48gs99rzzTYO2Pp22o_Xo_-fW808Nlvhc4IfucO-tyf0zMmjSXaOKG3jYlfgQoBOsSLFbM_V0fUbHmy1bsM9mayfzome1ISn0IjAsJcHU1tvwBbCBoKc6e88DHMlT2TYWP0Mh18rNpecbpyTDhI7MMAj9TUSd10mUMIdqgVzv_6XiT89WdDu_oIsSFJXLrhbJUizNUt12KdNKw4LcDhBUY4MyELTUDCa4LW2IBArPoGzzfPPyBghcTvwsq2T4U-9YcprjmOIlLpmdxmnp997hRRLxVnksNLE6VOh71VTMDkLA66x2uhAll91gK7aLX8KyeNAeqHZjIx-ppMTtA1qP1vFopUy0Nj0659huPC_T2sdos8PTfa87Vog9GDHx96mFyqcA0GjsluUTPQ0EB0aoY8rv3L9kHT_J4K37RQWjGuyhxYp9SytetAeK3sxZXtLlur7e_V3cDgmV8_ZIq5FWsGyg-kRB6UsTkRlR6YlsuhrBfvqEs22eak0ckplDYKz16nT-o5CDsNeheIZIFBj6lqx_ymWjgPR9ChZyQLBmguq6cEZXRMjJIDzI9S5qWtONY5lFX4gzdoKQmFuQAZsx0JSI6SPo68WD7GfU4ih-_v2uwaVASiehfFsuRFbr5ulv20VjADKHtVPVZ3n436SeRmB80YYKpvSd9kGsq92uL4bkasa8AezQS2Cu1LkU3zIdeanktbMbpYSd6GLp0oOOMYFaQhvae_jRxLKLh1bW9qlLOdzC2j2GJye2NLicb3cKzvw3BtsSYDWFrxJnPtUCznL86HbliKIghzVS8dbJHhLi3VyVAZI-HlJoquCXY4N4RbjL1xl0TBolsGFlKxsjdKBUwCoczIKk4ZZrev8ziuxZA7CsDRuCTs_51QluVPT4tvHE8o6jYxJiXhDuh7w07oRmIz4HcEYZyeAHOpCzwR31JneRrkmv1jYZL8Qh6nWQsah5n32fjGoSWuhEDG4LFp8qqRRqFGPH55X8CSKUSsYpLpvvM8j2l3rxddNyTQ9Gzt-DzHttXgTadO341pdUyQw5ouDf5gwoDT3UOXi05vAhV9Ot-PTx2A2S7MRSXbo6idZkgzQoi7gO1eZ0-sirHpgJdsA3eCmRR1qqI_2aK35RoVhn5LAitlX-Dbr_DAsCDH7kn57ILZrKV9kwxQZGJZXz6kA0zhuhLbe-xwKt3JTeeHaw0sYD5_Zt2EjaEJ0smzrLJiJLa1VSP2GCoUXu7WnTsr_ROIEhGyoGGig_wiLsDpDAizTWEeF5_F_hCDhHMIlm6Fx4NqvPb7Cd866aqXOBlZRlJ6VAoTwbDxMmpL6zHNcyihutg_PGHank63OdsFNRTQceJ6De7-JnEKIQS9XIFPX5abPUtUnz3S2QY9enz8gXJqJ_x6KxMkTfO0xtUMKd8RfLHUNRna8-P7j0fZke5Xd3cK8sGT-vaaeCoQCQh3xXz8muukqVip2PIPTFwC3GaOvQ-RBkz2Myc1aO5TSk_1nxO949ke5bElUa9sXvQzf_E9Yoh7GWAnKDhd55e8EF2xiCnzGx1yVwkeNxADRo9zeTwcwF8Jp9CnYESMJFQFBeCOu2b_I_5ckrNsp58QnEg9gioOjWcZpJD-_u1gqDxnW6i4Ye3VaNZ0R-2m9M4kn3pBTAZPe7Qij3h0th7IjV4Nqbp9TJP_e2JZvA9-Dz3Gg8fdyKNh_NBK7oz6U1CeJFvBPjUvOBgx7qc8Hd4HDfdB3_LC6lXBa4tF5dCTuR90b9Vgv_bFUJM9x4Vqc8i_FyA2cJjRGkwfsd3KBGye7JuCyc8epz8eDlgVR_EYM78pTj0pG-6FWWYqm-3eKMpft7KbbaITriJaoI7oVJKI3mIZEzIvTkJS9OtoTQX6GUTSaKPghF07nO2vk-VWAwGUJz1e0eVNG-hsrBSjWf9in5eTNcrRjVhla-OASZcmv6Jjsue7ORFXPGVfW8erHjBpDlUhSmYGQLRKn9j1E1dD0rjRORjPnhYOF4tDetOXE-2_suWo4WUDIbWSaNAanyQoIB3L8bKDRWAS-8G4qzY3mTwfRoyx0xOkKGVr43mcST5gKbYXTqf4rR38X94nUUY_qwjhS0pX-Aj5ThCyNF539Wl1dcQpDePHIAH_lU9bwj0BdJ4To3YfHBwwYLIehIJ5nGHxSBDNKiBZYlXBc1q3MWIxiG4ezFLSAe-fdDlfG76Qbhx6xzNnBUCfBnxEIOED2o1IsV0PhZeFBw0DJkgMSWCceCwpD48sAZj7vOaAsGAAmKzCS9AqN0-xtaUnwAfbFordFMns_m4W_Oy-K6pLKp0pF75NhcUYat7-AeVzfkMGeSja_WPf6QpqulxHMc3UUaU3Ex1OIklrKI0fwVh_9XuLsGRJy_fayhfSXDfmeJjEWoWxi442SiuRq86i95uf8yRUrYgySwQfYzTFDmNr-udhoBvZk0qGZ8bGJ2Krvvaf2r25facvUx7i2kn4lOSl5Pxmqv4ThN2sgnU1ZVEiGg75Z2gMnCAFLjq8Vvs0aD0LOpXRbWj-unvHScKfFjxkwdrWtNP3ENi-gZyUjDzi_iIrF43nk0jjFN2L45QF0h93C0ksv7O8cfeqCkqSj-NPVDstcMC0oY8-x5s8dcX-n4xTK0JlzBDVCNYTvSo9GB_s0KZ_7wAahvghk9GK6S8kzNRuMZO73wSyksR1vnGqnMt1NjCV8Omsxvu7bm9TsxMXYIJTFdfwGTCC1vj-V-SGuUC6uEWB8oK7sgjqp69zzQArGhr1txkx9bvUDf2usB4yGFDk1zatz425r1GbXAGfllA6ZKJA8v_v8mhOhbKvzOTx3CiUHwum5yFwRAm2S9oav34ToP67AwIGBF37KRsoeOYdmOxTS4c6V07t52nHSpYWO4SAwR46h1FMLCEhkY-GuYglhJ67iWIyoO19uxWdqwtVxaxjs-5t4dkZfh1u69s4x8VLJAN8upVWtJu0mTV3uWivFeQaagIuMhjj40bhF8Y0lBtmmcBP9JhIFxhMy3AFpULTcx_R9EyHP6npqvo3Gug7Js48LZXz0IeEHFddj6xz_6CboMW-1FOp6T2yEa0xKppjakFcBQEwx",
+      "summary": []
+     },
+     {
+      "id": "rs_02ef8df7c6dcd9f3006aee2f1e49d887d28f5e358c89d68373",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq7i8lF8CgdTF6c565w7d4ao4hK1YHGaNHlukg0CUC8HINT4IpDuj3OQPLsYtfBHB2NPYZ6leTF__KZvfj0SR-uclWTNAIiV4hyeEA7BLBLFJ6eOeZzVCjA6cIp2ctJI891qK0OufnhPydB8iCecOYixoIBzaFGmghdvjlGm0-kIHv1h4AON1A45AfN0qIqSDY_9YTmUnMC6HkmfnI7h46R56Uu33FjKsXPmqwW5GoHDsq4kHEn_Egen_wXkv7iJSjWsAZijfsJrrBUtYZcUViCoSN0NEAd5Zl6DI8gRjtKIOw0c7spyEq970Y_u1g10cTYkGBGzktVDZ28YP3EhHdJ6M3E3o4RKZ0xY7mYOomYtXjdWr3IfZcT2DYnLsB0GcUSNr70FaZfDj7oNch2T1mI9cquVHynE1kX1RJsfFMg1hMUzMwSBhmu9USYX0LUd4wtGMAotwAj7N5LBKekjCHKvfbmz970pO1ILVU9oEi0jlJvEbo-DK_AkNhyLCykYY_Rs-vxDkeiEca8Sq33yjjngiUV5BfVqhUmNnOylbz4ii4cLj4rexNOTnwbVDG7E8J71uKC8Oi8EiycQSq_9uCNZVo3dujOI2jKcyPkDJnDtdxzd49A5Pa2bssP4S2PRLCRYmtTWTTd2CeD9ZdXSLC-syhhZVJUsYq02zjYHIxRHmThUCe2oCRnM0sx2sONZjJ-pha2VTuAjkSoknoz0CcKmNyX8YgFZT7N9L54cYzY9Ifj7YQQ8std-VsZNnaCpRKvJVFIPq52rCwq3Bdj1u9OkXbOwfCwubJqHImejrULYSx0g6F9XuWo5gYfM_OXtHDnL9hu5FP6n-aXS6rvQFBM5ttWet4TPn9gfWDL4Wd6odV0BKjyLen2-osuQMdLdeYMmpZUgD45vU7Xl6PgnKNxyXaEUV6KigGiUKUSADRcQWDuWm0gL2jxUApIA0p-rug1MGnNS1jr10Suve4fJaf6jEUEhq_mVrX4IkwwAmYOXyqPGV4iD-7_73xr5vgpD1VNAUVrncFsat3BB9yPkfDUSBctjy5QevM-DyL5VVK8GgB2XgzorSJH5ZPI8wbnPoPzWkiNhJ70maYT6yjzIurWm2oOrBL3sBTpMiZbJ1gzgwlMTRZDXNJvGziXoEfsHRz9yT_B5DYD4XHBDAjyXkPn1WxAUD-l6vYWnYojZO8xgi2vhEFMKn2AH7OkzcfsrMB6d5uJDjKyTA4DKBMnt8IqhZfgRSk8vVre-RdRIs4RWB3oTku9Bl6Qyc1XsgfaTpQ9FzN9GgwwzMohcu6pJGWUMa536aKIGJa3WlHGbTS4IVBURQljW8SunnhKxtesjFT2fHHrtaO_L5_E2HqFg6RnIYZYW7yXO315oMqnujXWM3yczTD2vDEwvHMvbIJiYjhK9gCZCXS2vXhm1qfUWCdI66Qq-AbovEmRqy1m9v3hEtKoCiOiUBObEHo5LTe1AnK1M6eYw2DTgHMqkwIfYsEw3WMU7cuFcvkXddbknUKndJZ_qRX7HQCBPm1YiSnKer_qJuKLJ75mgj5Bspm2Z7bpWswzrPWBdbYtaPgVpcH9dM8ZXuN7882IUMFlYUhsgn1Y2msXXhg8BsmI2BgbHrMuT86gKciuGLUlEblkNwBabhw03vDIyH4D2xZygjlZwMZcq8_RiKYt9e7iOiVTJB5CdvKGCX3ZSXs86zWE2VfmV2413iKLCmOTaPepP5NkieYzE0LWlQGrMKVshVrQfT21IWIkP0ijuuvVXdEZfedXB70ClqanUOoJ4M7h4LhxzSu5xvLXuQlX2jcT2NHONp4Dt5k6-FPKhsCzCQW1xRdbVPi0pG-pm0uW6K1ChRUMN_u_yEzoBWeaSQRwRzADg-SSBN1k_PugcHv7M7OjwAGkxA1YNH-TFxKCGJZcb2v3j7n0CTWB18aLz7jaTu3oTPiW0lmRmO5Eh_WGoTWnCQNlkyGko0xMXjfbJjKIGZL655vsg4h4ti7191vw5ZxbjutheI44AvbB6g6xTJevBS4AxcbtB5v4jWLwkwPjer8EBQPGgKsv53k4-ecAgCDaGxmxzEBu8-zjjd7aI7ALY-DrvGLyINy-jU7kFx37FBpy-MEo6-SPXMCJj_vYAbWHKIhWwwv1G0fPYFu2EEMUnpYd1m17kIoeJoomfPKvWsHvnnVo-urHQqshyuI78ZCAhvlH7B82_2hYfglJv8ehpLaiF2PsUIS3vpfdXE3Gz54SYSjfbjRTdLFoeZCnnRvfvgzHEcizcNThDWNpiYpIfUOW_4xpimDCfWDf3FwCBz8K9o1lr5wqSpk2AnnvwoAMSuNv-4bLnwUouwA4xfveWuEA-ow6mKUTQFlQC8yBpMcxggX8I0RgsdKLELg2_-SERl0MKRSCk5b_AobHL--g2-o4nnpkay5EBsHUWx_OYS6Zm7vEW0L7N7fSeQwl95RKRhgptKHLWjULUUF-mjP8jdvAvrY4ciFNc0WsGgBp5YVfVZ2UI1cCqRSag6oEq_xqz7n-nOnSwG9d4k1szvN7vSX3YdDGA3WRIpPzpSu5yfo_M1qEqgIbASlWExGIvnKRgYxSsZe5Xie3dXhgXJ6nT9dPTKDfKkIVLwwlvGA6H9gzxZPu_WULe7gV_rwwnANcp1UOFn06bSetgUYwn6jQ1hlcigAXFxxs5fhaxvz8kgCdcFvSzZIBVsO5BXzO41WW5AkLffcAZ9CpVwErm-xflIZfFNflCnL4JGDpo44AzXJqUPrTpO8ar9K1plSjk9e6yV0bAV2FHRcymNiLfWokdKbFK1fDlTkHcOgYLemiGbDLUalkePFi4DjFMkG0T_U50dJqSr_vMgDcfJGkjVMXb3fOYEuwANZUp7rxMCAa-XnZxZq58NUZfZXRi5NmKZmrwdHz_qfRXG3Fdo1vYFq3PNR1OwTXYhTBAJV3kBPt-afGDzOpegCMHcZw2Sx-7CnYfvk8NhQ-uEkN3jjnXz9182aeNfc7g2N3y5QIpntZHtVcwUOQ5bho3Rtu2uxolcg-rr291cSnJmeum0jV0B1W5ZaAVeB6ITHetXqFt_rJDDNXdw-gEEGiS-e1wOaEyVZXCx8teWzJQlPEx-ceWfAhZ2gzVaGoEBLHX7fKJ_dLLUv-ZWwDR2Jup2YOtNuZHbY6uul7DMiglDi8QzzlBCC6EMoz7a4_A3rCSUHoUYCUWgeygCvRsPuZn8x232FkximyNLys0qarlYXoD10ONxelUALYe0Pq2mDLl-wkP3Cyc3uc544ndGL7DS3hoiHSfNP0kiY1WhUQ74vI3H7uiKFwMKqQmei2kWaInBPar_7jaUrcERqI0aOJV4BH6aWD0f4yHbnloxTb1k2MzKqBJjuV79CGnF_sFTITkXx0B1fOPg7v_21E-_Nz_yRDbFITPrQVZbLzp1mMeFZswAoQ_UBOrpLG0Vbs1PH2OEh2OMRf8RKjfpvGLOTPpLoRhAmZNNyy7TmR4zNJzZ6csIeYUcnUIOVfaIYBZd9QWmRYp8zstj7GXQ4-c-3sN5Usrtj5y0aV80YOKJsV6JreM3xfqIj05x3qg4Q4g1vf7Zkp_b6_jj7OivvK8VwWenAohlXi2oMBOS7PC46mB-WQQGzqm53goQgK9HbQVe9XIFsnbmW0IdacpQ3eYpJyedaAhtV_bpDVw_tqxHpmw25W0fDEEEiDuvc-5o5117F3JCupvcVyN48NkVFtN0xXFCa86f1yjhmUmHOOQcmS4G9YdqndHPn4YIOOJ3RfIzFKXZyq_0lmuQWfXwWNe8KzTsRNcPH9cKt8AMnWSEQyqjqUcgXfZxbjotlQdAXI-E_BJ_zGQsMNfMfTYsbgXzhXLT187BZUuBXNjLu0YPoQmpTuklJGn5jKvI2cAO3rc0GHBdyQmC8PRu6RHMqbnepkVq12Blo3jzNOf5JVBBse_8fPf1IU38X3Ry4XgWbrwod8xgTe4xx0llJsB9W6WGoAVt3VLTq3zQ2XCV_hY4p7772OV8LRbxlkZ0SSjUFXBKtZKtbA3C9PLbYKoIzwVfYcTF2maCkajKcES4s3YWpbVmBt0ibUNWJbGSViwICUYFpPrNZnX72RuswWWvJB8J7ZjzkWnJBiAl_qvCOQe1Mw153P-JuSJPjK0G79amK-PgHPIzTnLUfnn5NdkVjJ1NFMRIIH05bFINQzQrwKfo8XjaUBXzryzRrte0j-oCEdYL-N596lsOD7E1N68m5DnvlyYjyaMe1WuNJro3w5ejKqYM2mg0jtKKeDrPphwuVkY_bsluiCu3ejLqG_XUjHVgAOZnICWoze6iBwGiVNA0Vu68H6bMsJ2Oi4pKIt5Su-WPXRiaCuNf7IWhe2EalYYx28GFY4-wCRyV9darP8BBm8NHgws-IuYFPlRs1wdCPMPzZ7bxsj1n0uhGclDPSNxQmfNBU-HbdC_nZ3Gk7knwk8dZn4iMX3uoQlp_S4hy9jiqfGe4luk6o1B80ncQ01h6fzc7kGP2OMYGi4IIphet0Bc8X2QOCKhP9ugMIUJn6huGDVuRkMdaKQXsrMezLwDGtYVjQsKoIUNHVR08gO5j6bspUlCFcjNi6c9nNVjspx9D_8J8YYKEK2SORsqUZA3_CEQ_XTC4EbFPU_5-ZThfV2t9Bl4VNiboYAGVIPEjPlm4sOPSBtvKDEntjLWQ6SK0aa3qN4XyoUlKnlYZQCjVp7PLerNzsBDHy7LG2zUfQnnEpXJUc11v-J5TocsVDoqikZB0a8wVnY2tCKL69ViVUbjJwPoIm2fNtGFeY9TxUDcUhEck2LjY-6zMNQhdxDeOfvGESpoLXyclZXLy0dtJpiPzvZMnoxiTR-3bOq7ySeT0PT8ax-gcBqugoPVjQdgQq9wn-0-bhE2KAuFgQKejbwOIRHy3y6Ggvv5mUYegHlhArUCBnvEceOgNV2VviHsA1M9yzQdR29uGgiwJMMkFSdkDF-LJxeuxZAmHSSQ_MqJ2DTO0DIwDQV3Ti0-BSHpZ4WKQJAt61WbdY4AC8Upg5jcxWhok2kFsgHkqJYskkxO3l0lHS_dMyDLGwQI2Uw2nWqx1OlZQvxx0rC5GAXwz7QjRi8oNLtMZiFg_tzVyo2uWJYKJBKsSyBZTwJxLrrIygeD8MCJOo5ccz6gbTnQSdAnbBjhqb_yDZLAZ4ercbJrGUlszI42_3_MzTIntbXXCZyCBjitg5WlVPr9LW-TdTDB5KUgTOKQO6ifIh6HxlNgisQaZGVf9LhASJvfRo0jnzvft-s3nsgbphHpavmoeg44uXN75_e9NTizwsQbsMAmgm5pwAd4vM-qTZzRlbBxMtjCWKcB6sjI2Rwhr8QGljmZlIv5BFV9vnvyj38kOufF0XkgyFD7KdXY82yovDkSv7iM-vMAVnEbTKjHsqYOID6O-pYtcT8oK4HR3ML6uzMnkqfUWA8fwDgF2vTGr2RV6jxjSfOo-t-7L3LysqCHwq58yDpHj9pdxVi3jkHyPLCTuwqPrmdZ6F3YhyZTzC_zgbGM_5LGzcdU_DwF4nejxfm-MvmanoCN286JbfYcoGERqrswlGARjkuULXwicBFe_g_Jy-YbYsh6zzMWvJVY1UQKlhJdhaXLS1mF_vegLfItyxyZ3lJAVB3o1MK80pJprKJmzED-v9Hy8GJygqQYmSaA7EVWGJKaAdbViaEY9M5ADS5cxuD6f7A0QXGnzIKnU5kh0wjuwpkLdVPvcpjbJcQLHO11ax92I23l4kTSOegfS3NKvxynOEMzoZszEXtHjInPbsiiJPujJKqwjzBbmCulo3law1KsYNdhbp6o2GVs4=",
+      "summary": [
+       {
+        "type": "summary_text",
+        "text": "**Analyzing session failures**\n\nI'm diving into logs that indicate a timeout and connection failure. It seems like diagnosing this through all services may be helpful. I think the root cause is linked to the sub-poller, which might be affecting the edge gateway due to errors. I need to ensure that claims are valid, without trailing text after the JSON block. Finally, I\u2019ll put together a narrative with references to everything I've discovered. Let\u2019s get this right!"
+       }
+      ]
+     },
+     {
+      "id": "msg_02ef8df7c6dcd9f3006aee2f21f70087d2a256ef8362816e43",
+      "type": "message",
+      "status": "completed",
+      "content": [
+       {
+        "type": "output_text",
+        "annotations": [],
+        "logprobs": [],
+        "text": "The failure starts at **sub-poller**: its 14:01:40 v1.8.0 deploy changed subscription sync from every 60 seconds to every 5 seconds and made each worker do a full subscription scan. Immediately afterward, docstore traffic rose from about 300 req/s to about 4,000 req/s, with p99 latency near 5 seconds; its health probe reports 100% utilization and a 5-second queue wait, and its logs show a `subscriptions.find({})` collection scan. [s2, s7, s11, s12]\n\nThat datastore slowdown is causing session-api query timeouts, which edge-gw passes through as 504s. The probes show the gateway and session-api processes themselves are healthy, and the session-api-to-docstore connectivity probe reports no refused or reset connections. [s8, s9, s13, s14, s15]\n\n**Do now:** roll back sub-poller v1.8.0 to its pre-deploy configuration. Ensure the sync interval is **60 seconds** and **full scans per worker are disabled**, restoring the previous scan behavior. Let docstore drain the resulting query backlog; do not treat scaling docstore as the primary fix while the new polling behavior remains active.\n\n```json\n{\"root_cause_service\":\"sub-poller\",\"mechanism\":\"The v1.8.0 deploy changed subscription sync from every 60 seconds to every 5 seconds and made each worker full-scan subscriptions, sharply increasing docstore load. Slow subscription queries then time out in session-api, whose errors are returned by edge-gw.\",\"actions\":[\"Roll back sub-poller v1.8.0 to its pre-deploy configuration: set the sync interval to 60 seconds and disable full scans per worker, restoring the previous scan behavior.\",\"Allow docstore's query backlog to drain after the rollback. Verify recovery by checking that docstore load and latency fall and session-api and edge-gw errors clear.\"],\"claims\":[{\"kind\":\"state\",\"service\":\"edge-gw\",\"state\":\"erroring\",\"evidence\":[\"s5\",\"s15\"]},{\"kind\":\"state\",\"service\":\"session-api\",\"state\":\"erroring\",\"evidence\":[\"s6\",\"s9\"]},{\"kind\":\"state\",\"service\":\"docstore\",\"state\":\"overloaded\",\"evidence\":[\"s7\",\"s11\",\"s12\"]},{\"kind\":\"edge\",\"src\":\"edge-gw\",\"dst\":\"session-api\",\"type\":\"failure\",\"evidence\":[\"s3\",\"s5\",\"s15\"]},{\"kind\":\"edge\",\"src\":\"session-api\",\"dst\":\"docstore\",\"type\":\"failure\",\"evidence\":[\"s9\",\"s10\",\"s14\"]},{\"kind\":\"cause\",\"service\":\"sub-poller\",\"evidence\":[\"s2\",\"s7\",\"s12\"]}]}\n```"
+       }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+     }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": "resp_02ef8df7c6dcd9f3006aee2f0e6d8c87d2b599f5d87179d90e",
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+     "context": "all_turns",
+     "effort": "medium",
+     "mode": "standard",
+     "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": true,
+    "temperature": 1.0,
+    "text": {
+     "format": {
+      "type": "text"
+     },
+     "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+     "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+       "image_tokens": 0,
+       "text_tokens": 0
+      },
+      "total_tokens": 0
+     },
+     "web_search": {
+      "num_requests": 0
+     }
+    },
+    "tools": [
+     {
+      "type": "function",
+      "description": "List every Larkwave service you can inspect.",
+      "name": "list_services",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Configured downstream dependencies of a service, with timeouts, retries and call mode.",
+      "name": "get_dependencies",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "15-second metrics for a service from 14:01:00 to the page: req/s received (incl. retries), p99 latency, share of responses it returned as errors (includes errors it passes on from its dependencies).",
+      "name": "get_metrics",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Error log line count and a sample message for a service since 14:00:00.",
+      "name": "get_logs",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The service's own health probe right now: its own process error rate (excluding dependency failures), utilisation and queue wait.",
+      "name": "check_health",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "service",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "Synthetic TCP probe from one service to one of its dependencies over the last 60 s: share of connection attempts refused or reset.",
+      "name": "check_connectivity",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "src": {
+         "type": "string"
+        },
+        "dst": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "src",
+        "dst",
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     },
+     {
+      "type": "function",
+      "description": "The change / deploy / alert log up to the page, newest last.",
+      "name": "get_changes",
+      "output_schema": null,
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "reason": {
+         "type": "string",
+         "description": "Why you are making this call, in one sentence."
+        }
+       },
+       "required": [
+        "reason"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+     "input_tokens": 4206,
+     "input_tokens_details": {
+      "cache_write_tokens": 1115,
+      "cached_tokens": 3088
+     },
+     "output_tokens": 1456,
+     "output_tokens_details": {
+      "reasoning_tokens": 876
+     },
+     "total_tokens": 5662
+    },
+    "user": null,
+    "metadata": {}
+   }
+  }
+ ],
+ "steps": [
+  {
+   "id": "s1",
+   "exchange": 0,
+   "tool": "list_services",
+   "args": {
+    "reason": "Identify the available Larkwave services so I can trace the listener error path."
+   },
+   "reason": "Identify the available Larkwave services so I can trace the listener error path.",
+   "reasoning_summary": [
+    "**Investigating services and changes**\n\nI\u2019m thinking we should investigate the services we\u2019re dealing with. I might start a list of the services and any changes that need to happen, maybe even working on them in parallel. That way, I can get a feel for everything at once. It feels like a good approach to keep things organized and efficient. Let\u2019s make sure to cover all the bases as we dive in!"
+   ],
+   "output": "edge-gw\nsession-api\ndocstore\nmeta-index\nnotify-relay\nplayer-core\nmedia-cache\nvela-origin\nkorra-origin\nbrio-origin\nclip-preview\nclipstream-origin",
+   "observed": {
+    "services": [
+     "edge-gw",
+     "session-api",
+     "docstore",
+     "meta-index",
+     "notify-relay",
+     "player-core",
+     "media-cache",
+     "vela-origin",
+     "korra-origin",
+     "brio-origin",
+     "clip-preview",
+     "clipstream-origin"
+    ]
+   }
+  },
+  {
+   "id": "s2",
+   "exchange": 1,
+   "tool": "get_changes",
+   "args": {
+    "reason": "Check recent deploys, alerts, or changes that could explain the incident."
+   },
+   "reason": "Check recent deploys, alerts, or changes that could explain the incident.",
+   "reasoning_summary": [],
+   "output": "14:01:40   sub-poller        deploy  v1.8.0: subscription sync interval 60s -> 5s, full scan of subscriptions per worker\n14:02:30   docstore          infra   primary CPU 97%, connections 4890/5000\n14:03:30   session-api       alert   BotRuntimeSaturated / p99 > 1.5s\n14:04:20   docstore          alert   SlowQueries > 2k/min (collection: subscriptions)",
+   "observed": {
+    "events": [
+     [
+      100,
+      "sub-poller",
+      "deploy",
+      "v1.8.0: subscription sync interval 60s -> 5s, full scan of subscriptions per worker"
+     ],
+     [
+      150,
+      "docstore",
+      "infra",
+      "primary CPU 97%, connections 4890/5000"
+     ],
+     [
+      210,
+      "session-api",
+      "alert",
+      "BotRuntimeSaturated / p99 > 1.5s"
+     ],
+     [
+      260,
+      "docstore",
+      "alert",
+      "SlowQueries > 2k/min (collection: subscriptions)"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "s3",
+   "exchange": 1,
+   "tool": "get_dependencies",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Trace the public request dependencies to locate the affected playback path."
+   },
+   "reason": "Trace the public request dependencies to locate the affected playback path.",
+   "reasoning_summary": [],
+   "output": "edge-gw -> session-api (all required per request); timeout 3000ms, retries 0",
+   "observed": {
+    "service": "edge-gw",
+    "deps": [
+     "session-api"
+    ]
+   }
+  },
+  {
+   "id": "s4",
+   "exchange": 1,
+   "tool": "get_dependencies",
+   "args": {
+    "service": "player-core",
+    "reason": "Inspect playback service dependencies to trace failures downstream."
+   },
+   "reason": "Inspect playback service dependencies to trace failures downstream.",
+   "reasoning_summary": [],
+   "output": "player-core -> media-cache (all required per request); timeout 1200ms, retries 3",
+   "observed": {
+    "service": "player-core",
+    "deps": [
+     "media-cache"
+    ]
+   }
+  },
+  {
+   "id": "s5",
+   "exchange": 2,
+   "tool": "get_metrics",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Measure whether the public gateway is returning errors or slow responses during the page."
+   },
+   "reason": "Measure whether the public gateway is returning errors or slow responses during the page.",
+   "reasoning_summary": [
+    "**Inspecting service metrics**\n\nI need to take a closer look at several service metrics, including Edge, session, and docstore. I should also check if the sub-poller is included in the metrics. It's important to gather metrics for each service and review their health and logs as well. I'll need to focus on dependencies like the session API and docstore to ensure everything is functioning properly."
+   ],
+   "output": "edge-gw (time, req/s, p99, err)\n14:01:00  req/s=   193  p99=   264ms  err=  0%\n14:01:15  req/s=   194  p99=   262ms  err=  0%\n14:01:30  req/s=   199  p99=   265ms  err=  0%\n14:01:45  req/s=   188  p99=  1753ms  err=100%\n14:02:00  req/s=   196  p99=  1713ms  err=100%\n14:02:15  req/s=   212  p99=  1813ms  err=100%\n14:02:30  req/s=   207  p99=  1803ms  err=100%\n14:02:45  req/s=   194  p99=  1780ms  err=100%\n14:03:00  req/s=   205  p99=  1759ms  err=100%\n14:03:15  req/s=   197  p99=  1749ms  err=100%\n14:03:30  req/s=   222  p99=  1757ms  err=100%\n14:03:45  req/s=   214  p99=  1800ms  err=100%\n14:04:00  req/s=   192  p99=  1730ms  err=100%\n14:04:15  req/s=   193  p99=  1787ms  err=100%\n14:04:30  req/s=   190  p99=  1743ms  err=100%\n14:04:45  req/s=   196  p99=  1795ms  err=100%\n14:05:00  req/s=   201  p99=  1765ms  err=100%",
+   "observed": {
+    "service": "edge-gw",
+    "series": [
+     {
+      "t": 60,
+      "rps": 192.57104915232063,
+      "lat_ms": 263.6410357716426,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 194.04443889964477,
+      "lat_ms": 261.82432725332774,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 199.0565447381061,
+      "lat_ms": 264.76052616156153,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 187.7624543756055,
+      "lat_ms": 1753.4880826693964,
+      "err": 1.0
+     },
+     {
+      "t": 120,
+      "rps": 195.52933036956415,
+      "lat_ms": 1712.9614536758233,
+      "err": 1.0
+     },
+     {
+      "t": 135,
+      "rps": 212.09140037718794,
+      "lat_ms": 1813.0230476335526,
+      "err": 1.0
+     },
+     {
+      "t": 150,
+      "rps": 206.76404156728452,
+      "lat_ms": 1803.3888837363597,
+      "err": 1.0
+     },
+     {
+      "t": 165,
+      "rps": 194.4851685993413,
+      "lat_ms": 1779.7067814134255,
+      "err": 1.0
+     },
+     {
+      "t": 180,
+      "rps": 204.94554871765374,
+      "lat_ms": 1759.1085135904066,
+      "err": 1.0
+     },
+     {
+      "t": 195,
+      "rps": 197.37181216466126,
+      "lat_ms": 1748.7688278551148,
+      "err": 1.0
+     },
+     {
+      "t": 210,
+      "rps": 222.00379165783315,
+      "lat_ms": 1757.2996196383103,
+      "err": 1.0
+     },
+     {
+      "t": 225,
+      "rps": 214.27413727910226,
+      "lat_ms": 1800.0109704298136,
+      "err": 1.0
+     },
+     {
+      "t": 240,
+      "rps": 191.9248816320729,
+      "lat_ms": 1729.801435985427,
+      "err": 1.0
+     },
+     {
+      "t": 255,
+      "rps": 193.22040937733178,
+      "lat_ms": 1787.4736332331106,
+      "err": 1.0
+     },
+     {
+      "t": 270,
+      "rps": 190.43010056819307,
+      "lat_ms": 1742.694442756606,
+      "err": 1.0
+     },
+     {
+      "t": 285,
+      "rps": 195.85421209410978,
+      "lat_ms": 1795.2484901402515,
+      "err": 1.0
+     },
+     {
+      "t": 300,
+      "rps": 200.52584447654107,
+      "lat_ms": 1764.6050494913443,
+      "err": 1.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s6",
+   "exchange": 2,
+   "tool": "get_metrics",
+   "args": {
+    "service": "session-api",
+    "reason": "Measure the session service's incident-period errors and latency."
+   },
+   "reason": "Measure the session service's incident-period errors and latency.",
+   "reasoning_summary": [],
+   "output": "session-api (time, req/s, p99, err)\n14:01:00  req/s=   190  p99=   254ms  err=  0%\n14:01:15  req/s=   189  p99=   250ms  err=  0%\n14:01:30  req/s=   202  p99=   263ms  err=  0%\n14:01:45  req/s=   185  p99=  1720ms  err=100%\n14:02:00  req/s=   200  p99=  1751ms  err=100%\n14:02:15  req/s=   206  p99=  1758ms  err=100%\n14:02:30  req/s=   195  p99=  1693ms  err=100%\n14:02:45  req/s=   186  p99=  1698ms  err=100%\n14:03:00  req/s=   204  p99=  1746ms  err=100%\n14:03:15  req/s=   203  p99=  1791ms  err=100%\n14:03:30  req/s=   227  p99=  1793ms  err=100%\n14:03:45  req/s=   211  p99=  1765ms  err=100%\n14:04:00  req/s=   197  p99=  1770ms  err=100%\n14:04:15  req/s=   190  p99=  1750ms  err=100%\n14:04:30  req/s=   187  p99=  1705ms  err=100%\n14:04:45  req/s=   192  p99=  1756ms  err=100%\n14:05:00  req/s=   204  p99=  1793ms  err=100%",
+   "observed": {
+    "service": "session-api",
+    "series": [
+     {
+      "t": 60,
+      "rps": 189.58147643627646,
+      "lat_ms": 254.37865292794427,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 189.3487836853468,
+      "lat_ms": 250.44000656782484,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 201.8149416387265,
+      "lat_ms": 263.1697630516645,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 184.6831546230325,
+      "lat_ms": 1719.6243063186744,
+      "err": 1.0
+     },
+     {
+      "t": 120,
+      "rps": 200.4215686738028,
+      "lat_ms": 1750.6277679857292,
+      "err": 1.0
+     },
+     {
+      "t": 135,
+      "rps": 206.2290497367594,
+      "lat_ms": 1757.698947159317,
+      "err": 1.0
+     },
+     {
+      "t": 150,
+      "rps": 194.69230456066697,
+      "lat_ms": 1693.077978118689,
+      "err": 1.0
+     },
+     {
+      "t": 165,
+      "rps": 186.15375169860783,
+      "lat_ms": 1698.4250800933266,
+      "err": 1.0
+     },
+     {
+      "t": 180,
+      "rps": 204.0711895148015,
+      "lat_ms": 1746.4256380658976,
+      "err": 1.0
+     },
+     {
+      "t": 195,
+      "rps": 202.77502102637936,
+      "lat_ms": 1791.3279927269568,
+      "err": 1.0
+     },
+     {
+      "t": 210,
+      "rps": 227.2455779940831,
+      "lat_ms": 1793.4868364145266,
+      "err": 1.0
+     },
+     {
+      "t": 225,
+      "rps": 210.71573339367188,
+      "lat_ms": 1764.8886550283103,
+      "err": 1.0
+     },
+     {
+      "t": 240,
+      "rps": 196.99183902113617,
+      "lat_ms": 1770.2156502949535,
+      "err": 1.0
+     },
+     {
+      "t": 255,
+      "rps": 189.77166530140175,
+      "lat_ms": 1750.3722707624515,
+      "err": 1.0
+     },
+     {
+      "t": 270,
+      "rps": 186.9189484316998,
+      "lat_ms": 1705.499556770855,
+      "err": 1.0
+     },
+     {
+      "t": 285,
+      "rps": 192.18376200500833,
+      "lat_ms": 1756.3899463272055,
+      "err": 1.0
+     },
+     {
+      "t": 300,
+      "rps": 204.4035337858258,
+      "lat_ms": 1793.4080831838733,
+      "err": 1.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s7",
+   "exchange": 2,
+   "tool": "get_metrics",
+   "args": {
+    "service": "docstore",
+    "reason": "Measure datastore impact associated with the subscription query alert."
+   },
+   "reason": "Measure datastore impact associated with the subscription query alert.",
+   "reasoning_summary": [],
+   "output": "docstore (time, req/s, p99, err)\n14:01:00  req/s=   298  p99=     5ms  err=  0%\n14:01:15  req/s=   287  p99=     5ms  err=  0%\n14:01:30  req/s=   297  p99=     5ms  err=  0%\n14:01:45  req/s=  4158  p99=  5313ms  err=  0%\n14:02:00  req/s=  4107  p99=  5213ms  err=  0%\n14:02:15  req/s=  3889  p99=  4924ms  err=  0%\n14:02:30  req/s=  3995  p99=  5069ms  err=  0%\n14:02:45  req/s=  4058  p99=  5174ms  err=  0%\n14:03:00  req/s=  4001  p99=  5068ms  err=  0%\n14:03:15  req/s=  3959  p99=  5031ms  err=  0%\n14:03:30  req/s=  3956  p99=  4963ms  err=  0%\n14:03:45  req/s=  3849  p99=  4863ms  err=  0%\n14:04:00  req/s=  3959  p99=  5040ms  err=  0%\n14:04:15  req/s=  3974  p99=  5073ms  err=  0%\n14:04:30  req/s=  3882  p99=  4950ms  err=  0%\n14:04:45  req/s=  3931  p99=  5013ms  err=  0%\n14:05:00  req/s=  3894  p99=  4945ms  err=  0%",
+   "observed": {
+    "service": "docstore",
+    "series": [
+     {
+      "t": 60,
+      "rps": 297.70928194154726,
+      "lat_ms": 5.082052285718325,
+      "err": 0.0
+     },
+     {
+      "t": 75,
+      "rps": 287.1955648856036,
+      "lat_ms": 4.845695328363414,
+      "err": 0.0
+     },
+     {
+      "t": 90,
+      "rps": 297.2572570167421,
+      "lat_ms": 4.9562770374063785,
+      "err": 0.0
+     },
+     {
+      "t": 105,
+      "rps": 4157.92560577535,
+      "lat_ms": 5312.740062749862,
+      "err": 0.0
+     },
+     {
+      "t": 120,
+      "rps": 4107.191011345812,
+      "lat_ms": 5213.355477933984,
+      "err": 0.0
+     },
+     {
+      "t": 135,
+      "rps": 3889.4501850359916,
+      "lat_ms": 4923.8395507682735,
+      "err": 0.0
+     },
+     {
+      "t": 150,
+      "rps": 3995.2132583716284,
+      "lat_ms": 5068.811979981908,
+      "err": 0.0
+     },
+     {
+      "t": 165,
+      "rps": 4057.7627516433668,
+      "lat_ms": 5174.129120207107,
+      "err": 0.0
+     },
+     {
+      "t": 180,
+      "rps": 4001.4650821630994,
+      "lat_ms": 5067.917266380232,
+      "err": 0.0
+     },
+     {
+      "t": 195,
+      "rps": 3958.6311570629414,
+      "lat_ms": 5030.834693083428,
+      "err": 0.0
+     },
+     {
+      "t": 210,
+      "rps": 3955.5645649737435,
+      "lat_ms": 4963.398043158721,
+      "err": 0.0
+     },
+     {
+      "t": 225,
+      "rps": 3849.0152068348325,
+      "lat_ms": 4863.2113176172425,
+      "err": 0.0
+     },
+     {
+      "t": 240,
+      "rps": 3959.0864488314874,
+      "lat_ms": 5040.421564011417,
+      "err": 0.0
+     },
+     {
+      "t": 255,
+      "rps": 3973.755532748329,
+      "lat_ms": 5072.604153599777,
+      "err": 0.0
+     },
+     {
+      "t": 270,
+      "rps": 3881.9681951645994,
+      "lat_ms": 4949.997735462004,
+      "err": 0.0
+     },
+     {
+      "t": 285,
+      "rps": 3930.7777334982784,
+      "lat_ms": 5013.066677642549,
+      "err": 0.0
+     },
+     {
+      "t": 300,
+      "rps": 3894.1661803487605,
+      "lat_ms": 4945.318556572913,
+      "err": 0.0
+     }
+    ]
+   }
+  },
+  {
+   "id": "s8",
+   "exchange": 2,
+   "tool": "check_health",
+   "args": {
+    "service": "session-api",
+    "reason": "Separate session-api's own process saturation from dependency-propagated errors."
+   },
+   "reason": "Separate session-api's own process saturation from dependency-propagated errors.",
+   "reasoning_summary": [],
+   "output": "session-api: HEALTHY  own_error_rate=0%  utilisation=6%  queue_wait=0.0s  pods ready",
+   "observed": {
+    "service": "session-api",
+    "status": "healthy",
+    "own_err": 0.0,
+    "util": 0.06108498233155179,
+    "wait_s": 0.0
+   }
+  },
+  {
+   "id": "s9",
+   "exchange": 2,
+   "tool": "get_logs",
+   "args": {
+    "service": "session-api",
+    "reason": "Inspect recent session-api errors for the failure mechanism."
+   },
+   "reason": "Inspect recent session-api errors for the failure mechanism.",
+   "reasoning_summary": [],
+   "output": "session-api: 39586 error lines, sample: 'docstore query timed out after 1500ms (attempt 1/2, 2/2)'",
+   "observed": {
+    "service": "session-api",
+    "count": 39586,
+    "message": "docstore query timed out after 1500ms (attempt 1/2, 2/2)"
+   }
+  },
+  {
+   "id": "s10",
+   "exchange": 2,
+   "tool": "get_dependencies",
+   "args": {
+    "service": "session-api",
+    "reason": "Identify which downstream dependency is affecting session requests."
+   },
+   "reason": "Identify which downstream dependency is affecting session requests.",
+   "reasoning_summary": [],
+   "output": "session-api -> docstore, meta-index, notify-relay, player-core (all required per request); timeout 1500ms, retries 1",
+   "observed": {
+    "service": "session-api",
+    "deps": [
+     "docstore",
+     "meta-index",
+     "notify-relay",
+     "player-core"
+    ]
+   }
+  },
+  {
+   "id": "s11",
+   "exchange": 2,
+   "tool": "check_health",
+   "args": {
+    "service": "docstore",
+    "reason": "Check datastore process utilization and queueing during the incident."
+   },
+   "reason": "Check datastore process utilization and queueing during the incident.",
+   "reasoning_summary": [],
+   "output": "docstore: SATURATED  own_error_rate=0%  utilisation=100%  queue_wait=5.0s  pods ready",
+   "observed": {
+    "service": "docstore",
+    "status": "saturated",
+    "own_err": 0.0,
+    "util": 1.0,
+    "wait_s": 5.0
+   }
+  },
+  {
+   "id": "s12",
+   "exchange": 2,
+   "tool": "get_logs",
+   "args": {
+    "service": "docstore",
+    "reason": "Inspect recent datastore error messages related to the reported slow queries."
+   },
+   "reason": "Inspect recent datastore error messages related to the reported slow queries.",
+   "reasoning_summary": [],
+   "output": "docstore: 0 error lines, sample: 'slow query: subscriptions.find({}) 1840ms, planSummary: COLLSCAN'",
+   "observed": {
+    "service": "docstore",
+    "count": 0,
+    "message": "slow query: subscriptions.find({}) 1840ms, planSummary: COLLSCAN"
+   }
+  },
+  {
+   "id": "s13",
+   "exchange": 3,
+   "tool": "check_health",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Confirm the gateway's own process health so I can attribute its errors to its required session dependency."
+   },
+   "reason": "Confirm the gateway's own process health so I can attribute its errors to its required session dependency.",
+   "reasoning_summary": [
+    "**Assessing polling issues**\n\nI need to look into the sub-poller that deploys polling every 5 seconds. It seems like I should revert its configuration to a previous 60-second sync interval and avoid a full scan for each worker. I must check service dependencies, gather logs for evidence, and diagnose the session and docstore connectivity. It appears that the sub-poller may be causing issues, and I\u2019ll need to consider reducing the polling frequency and restoring the interval promptly.",
+    "**Investigating root causes**\n\nI need to find more evidence about whether the docstore and its dependencies are causing issues. The metrics show total requests around 4,000 compared to 300 previously, and the logs indicate full scans. I may need to look at other impacted services, particularly the session API. The sub-poller could be the root cause here, but it\u2019s not listed as inspectable. There are claims about errors and loading; session API failures relate to the docstore. I should check the changes history more thoroughly.",
+    "**Considering sub-poller actions**\n\nI need to think about whether to stop or roll back the sub-poller to a previous version, specifically v1.8.0, which changed the polling interval and introduced full scans. I should roll back to an interval of 60 seconds and use incremental scans instead of full scans for each worker. The current change indicates it's set to 5 seconds, which is too frequent, plus possibly creating a backlog that might need to be managed."
+   ],
+   "output": "edge-gw: HEALTHY  own_error_rate=0%  utilisation=4%  queue_wait=0.0s  pods ready",
+   "observed": {
+    "service": "edge-gw",
+    "status": "healthy",
+    "own_err": 0.0,
+    "util": 0.03640339120808936,
+    "wait_s": 0.0
+   }
+  },
+  {
+   "id": "s14",
+   "exchange": 3,
+   "tool": "check_connectivity",
+   "args": {
+    "src": "session-api",
+    "dst": "docstore",
+    "reason": "Verify whether session requests are failing due to connectivity or datastore latency rather than network reachability."
+   },
+   "reason": "Verify whether session requests are failing due to connectivity or datastore latency rather than network reachability.",
+   "reasoning_summary": [],
+   "output": "session-api -> docstore: 0% of connection attempts refused or reset (last 60 s)",
+   "observed": {
+    "src": "session-api",
+    "dst": "docstore",
+    "refused": 0.0
+   }
+  },
+  {
+   "id": "s15",
+   "exchange": 3,
+   "tool": "get_logs",
+   "args": {
+    "service": "edge-gw",
+    "reason": "Check whether gateway errors are being passed through from session-api or generated locally."
+   },
+   "reason": "Check whether gateway errors are being passed through from session-api or generated locally.",
+   "reasoning_summary": [],
+   "output": "edge-gw: 39471 error lines, sample: 'upstream session-api returned 504'",
+   "observed": {
+    "service": "edge-gw",
+    "count": 39471,
+    "message": "upstream session-api returned 504"
+   }
+  }
+ ],
+ "model_reported": "gpt-6-luna",
+ "answer": "The failure starts at **sub-poller**: its 14:01:40 v1.8.0 deploy changed subscription sync from every 60 seconds to every 5 seconds and made each worker do a full subscription scan. Immediately afterward, docstore traffic rose from about 300 req/s to about 4,000 req/s, with p99 latency near 5 seconds; its health probe reports 100% utilization and a 5-second queue wait, and its logs show a `subscriptions.find({})` collection scan. [s2, s7, s11, s12]\n\nThat datastore slowdown is causing session-api query timeouts, which edge-gw passes through as 504s. The probes show the gateway and session-api processes themselves are healthy, and the session-api-to-docstore connectivity probe reports no refused or reset connections. [s8, s9, s13, s14, s15]\n\n**Do now:** roll back sub-poller v1.8.0 to its pre-deploy configuration. Ensure the sync interval is **60 seconds** and **full scans per worker are disabled**, restoring the previous scan behavior. Let docstore drain the resulting query backlog; do not treat scaling docstore as the primary fix while the new polling behavior remains active.\n\n```json\n{\"root_cause_service\":\"sub-poller\",\"mechanism\":\"The v1.8.0 deploy changed subscription sync from every 60 seconds to every 5 seconds and made each worker full-scan subscriptions, sharply increasing docstore load. Slow subscription queries then time out in session-api, whose errors are returned by edge-gw.\",\"actions\":[\"Roll back sub-poller v1.8.0 to its pre-deploy configuration: set the sync interval to 60 seconds and disable full scans per worker, restoring the previous scan behavior.\",\"Allow docstore's query backlog to drain after the rollback. Verify recovery by checking that docstore load and latency fall and session-api and edge-gw errors clear.\"],\"claims\":[{\"kind\":\"state\",\"service\":\"edge-gw\",\"state\":\"erroring\",\"evidence\":[\"s5\",\"s15\"]},{\"kind\":\"state\",\"service\":\"session-api\",\"state\":\"erroring\",\"evidence\":[\"s6\",\"s9\"]},{\"kind\":\"state\",\"service\":\"docstore\",\"state\":\"overloaded\",\"evidence\":[\"s7\",\"s11\",\"s12\"]},{\"kind\":\"edge\",\"src\":\"edge-gw\",\"dst\":\"session-api\",\"type\":\"failure\",\"evidence\":[\"s3\",\"s5\",\"s15\"]},{\"kind\":\"edge\",\"src\":\"session-api\",\"dst\":\"docstore\",\"type\":\"failure\",\"evidence\":[\"s9\",\"s10\",\"s14\"]},{\"kind\":\"cause\",\"service\":\"sub-poller\",\"evidence\":[\"s2\",\"s7\",\"s12\"]}]}\n```",
+ "final_reasoning": [
+  "**Analyzing session failures**\n\nI'm diving into logs that indicate a timeout and connection failure. It seems like diagnosing this through all services may be helpful. I think the root cause is linked to the sub-poller, which might be affecting the edge gateway due to errors. I need to ensure that claims are valid, without trailing text after the JSON block. Finally, I\u2019ll put together a narrative with references to everything I've discovered. Let\u2019s get this right!"
+ ],
+ "finished_at_utc": "2026-11-06T19:48:53.670297+00:00",
+ "usage": [
+  {
+   "input_tokens": 726,
+   "input_tokens_details": {
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "output_tokens": 51,
+   "output_tokens_details": {
+    "reasoning_tokens": 16
+   },
+   "total_tokens": 777
+  },
+  {
+   "input_tokens": 831,
+   "input_tokens_details": {
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "output_tokens": 106,
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "total_tokens": 937
+  },
+  {
+   "input_tokens": 1126,
+   "input_tokens_details": {
+    "cache_write_tokens": 1123,
+    "cached_tokens": 0
+   },
+   "output_tokens": 299,
+   "output_tokens_details": {
+    "reasoning_tokens": 40
+   },
+   "total_tokens": 1425
+  },
+  {
+   "input_tokens": 3091,
+   "input_tokens_details": {
+    "cache_write_tokens": 1965,
+    "cached_tokens": 1123
+   },
+   "output_tokens": 1005,
+   "output_tokens_details": {
+    "reasoning_tokens": 869
+   },
+   "total_tokens": 4096
+  },
+  {
+   "input_tokens": 4206,
+   "input_tokens_details": {
+    "cache_write_tokens": 1115,
+    "cached_tokens": 3088
+   },
+   "output_tokens": 1456,
+   "output_tokens_details": {
+    "reasoning_tokens": 876
+   },
+   "total_tokens": 5662
+  }
+ ]
+}
