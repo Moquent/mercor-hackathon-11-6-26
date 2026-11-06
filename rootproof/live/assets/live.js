@@ -149,6 +149,14 @@ function setT(t) {
   const cur = $('#spark .tcur'); if (cur) { cur.setAttribute('x1', S.t); cur.setAttribute('x2', S.t); }
   $('#tinfo').textContent = S.t < 300 ? `page in ${Math.ceil(300 - S.t)}s` : 'after page';
   if (!S.sim) return;
+  const entry = (S.catalog && S.catalog.topology && S.catalog.topology.entry) || 'edge-gw';
+  const impact = svcAt(entry, S.t);
+  if (impact) {
+    $('#impact-error').textContent = pct(impact.err);
+    $('#impact-error').className = impact.err > .05 ? 'metric-alert' : 'metric-healthy';
+    $('#impact-rps').textContent = num(impact.rps);
+    $('#impact-latency').textContent = impact.lat == null ? '—' : `${num(impact.lat)} ms`;
+  }
   for (const n of Object.values(S.nodes)) {
     const m = svcAt(n.id, S.t);
     if (!m) { n.met.textContent = n.job ? 'job' : ''; continue; }
@@ -194,13 +202,15 @@ function drawSpark() {
   s('line', { class: 'tcur', x1: S.t, x2: S.t, y1: 0, y2: 34 }, sv);
 }
 function renderTruthPanel() {
-  const side = $('#topo-side'); side.innerHTML = '';
+  const side = $('#tab-changes'); side.innerHTML = '';
   const inc = S.catalog && (S.catalog.incidents || []).find(i => i.id === S.incident);
   $('#topo-title').textContent = inc ? inc.title || inc.id : (S.incident || '');
   const evs = (S.sim && S.sim.events) || [];
-  if (evs.length) side.append(h('div', { class: 'card' }, h('div', { class: 'k' }, 'change / event feed'),
-    ...evs.slice(0, 6).map(e => h('div', { class: 'mono ell', title: e[3] }, h('span', { class: 'dim' }, clock(e[0]) + ' '), `${e[1]} · ${short(e[3], 46)}`))));
-  S.truthCard = h('div', { class: 'card', style: 'display:none' }); side.append(S.truthCard);
+  if (evs.length) side.append(h('div', { class: 'changes-list' },
+    ...evs.map(e => h('div', { class: 'change-row' }, h('span', { class: 'change-time mono' }, clock(e[0])),
+      h('span', { class: 'change-service mono' }, e[1]), h('span', { class: 'change-message' }, e[3])))));
+  else side.append(h('div', { class: 'empty sm' }, 'No changes recorded for this incident.'));
+  S.truthCard = h('div', { class: 'truth-card', style: 'display:none' }); side.append(S.truthCard);
 }
 function revealTruth() {   // during verification: show where the faults really are
   if (!S.sim || S.truthShown) return; S.truthShown = true;
@@ -586,11 +596,29 @@ function logClass(t, ev) {
   if (AGENT_T.has(t)) return 'agent'; if (VERIF_T.has(t)) return 'verif';
   if (t.startsWith('bench')) return 'bench'; if (t.startsWith('draft') || t.startsWith('case')) return 'draft'; return 'sys';
 }
+function logSummary(type, ev) {
+  if (type === 'log' || type === 'error' || type === 'case_error') return ev.msg || ev.error || '';
+  if (type === 'tool_call') return `${sid(ev.step)} · ${ev.tool || 'tool'}(${argsText(ev.args)})`;
+  if (type === 'tool_result') return `${sid(ev.step)} · ${short(String(ev.output || '').split('\n')[0], 100)}`;
+  if (type === 'stage') return `${ev.name || ''} · ${ev.status || ''}`;
+  if (type === 'claim') return `${ev.label || ''} · ${ev.text || claimSummary(ev.claim)}`;
+  if (type === 'verdict') return `${ev.verdict || '—'} · ${ev.clean_trace ? 'clean trace' : 'review trace'}`;
+  if (type === 'first_wrong') return `${sid(ev.step)} · ${ev.claim || ''}`;
+  if (type === 'replay_seed') return `seed ${ev.seed} · ${ev.fixed ? 'resolved' : 'not resolved'}`;
+  if (type === 'bench_row') return `${ev.task} · run ${ev.run} · ${ev.verdict}`;
+  if (type === 'bench_totals') return `${ev.done}/${ev.total} runs verified`;
+  if (type === 'job_started') return `${ev.kind || 'job'}${ev.task ? ' · ' + ev.task : ''}`;
+  if (type === 'reasoning') return short(ev.text || '', 120);
+  return short(ev.text || ev.detail || ev.name || '', 120);
+}
 function logEvent(ev) {
   const t = String(ev.type || '?');
   const rest = Object.assign({}, ev); delete rest.type; delete rest.job; delete rest.seq;
-  const line = h('div', { class: 'ev ' + logClass(t, ev) }, h('span', { class: 'sq' }, ev.seq ?? ''), h('span', { class: 'ty' }, t), ' ', JSON.stringify(rest));
-  line.dataset.k = (t + ' ' + line.textContent).toLowerCase();
+  const raw = JSON.stringify(rest, null, 2);
+  const line = h('details', { class: 'ev ' + logClass(t, ev) },
+    h('summary', {}, h('span', { class: 'sq' }, ev.seq ?? ''), h('span', { class: 'ty' }, t.replaceAll('_', ' ')),
+      h('span', { class: 'ev-summary' }, logSummary(t, ev))), h('pre', { class: 'event-raw' }, raw));
+  line.dataset.k = (t + ' ' + line.textContent + ' ' + raw).toLowerCase();
   const f = $('#log-filter').value.trim().toLowerCase(); if (f && !line.dataset.k.includes(f)) line.style.display = 'none';
   const box = $('#tab-log'); box.append(line);
   while (box.childElementCount > 3000) box.firstChild.remove();
@@ -668,6 +696,15 @@ function fillRuns() {
   if (!runs.length) sel.append(h('option', { value: '' }, 'no saved runs'));
   const has = runs.length > 0;
   $('#btn-replay').disabled = !has || S.status === 'running'; $('#btn-verify').disabled = !has || S.status === 'running';
+  updateRunSummary();
+}
+function updateRunSummary() {
+  const run = (S.catalog?.runs || []).find(r => r.task === S.incident && String(r.run) === $('#sel-run').value);
+  const verdict = $('#impact-verdict');
+  verdict.textContent = run?.verdict || '—';
+  verdict.className = run?.verdict ? `metric-${verdictClass(run.verdict)}` : '';
+  const c = run?.counts;
+  $('#impact-trace').textContent = c ? `${c.VERIFIED || 0} verified · ${c.FALSE || 0} false` : 'no saved run';
 }
 async function selectIncident(id) {
   S.incident = id; fillRuns(); clearOverlays();
@@ -676,6 +713,7 @@ async function selectIncident(id) {
 }
 function wire() {
   $('#sel-incident').addEventListener('change', e => selectIncident(e.target.value));
+  $('#sel-run').addEventListener('change', updateRunSummary);
   $('#btn-replay').onclick = () => startJob('/api/replay', { task: S.incident, run: +$('#sel-run').value || 1, speed: 1.0 }, 'replay');
   $('#btn-live').onclick = () => { if (confirm(`Start a NEW live agent run on ${S.incident}? This makes real model API calls.`)) startJob('/api/investigate', { task: S.incident }, 'investigate'); };
   $('#btn-verify').onclick = () => startJob('/api/verify', { task: S.incident, run: +$('#sel-run').value || 1 }, 'verify');

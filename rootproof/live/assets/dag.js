@@ -113,7 +113,9 @@ async function verify() {
   if(state.task) body.task=state.task.task.task_id;
   else if($('#cov').value!=='run') body.coverage={closed_world:$('#cov').value==='closed',level:$('#cov').value==='closed'?'complete':'partial',source:'user selection'};
   const result=await api('/api/dag/verify',body), v=result.verdicts[0]; state.path=v.dependency_path || []; draw();
-  $('#verdict').replaceChildren(el('span',{class:'badge v-'+v.verdict},v.verdict),el('p',{},v.explanation),el('pre',{class:'logs'},JSON.stringify(v.evidence || [],null,2)));
+  const contents=[el('span',{class:'badge v-'+v.verdict},v.verdict),el('p',{},v.explanation)];
+  if(v.evidence?.length) contents.push(el('pre',{class:'logs'},JSON.stringify(v.evidence,null,2)));
+  $('#verdict').replaceChildren(...contents);
 }
 async function ask() {
   $('#asksec').classList.remove('hidden'); $('#asklog').textContent='Starting model request…'; $('#askout').textContent=''; $('#askbtn').disabled=true;

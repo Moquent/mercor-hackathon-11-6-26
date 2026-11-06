@@ -63,6 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/":
             path = "/index.html"
+        if path == "/report":
+            report = os.path.join(RESULTS, "report.html")
+            if not os.path.isfile(report):
+                return self._send(404, {"error": "results report not built"})
+            with open(report, "rb") as f:
+                return self._send(200, f.read(), TYPES[".html"])
         if path.startswith("/api/dag/"):
             from ..dagscope.routes import handle_get
             result = handle_get(path)

@@ -19,6 +19,7 @@
 
   /* ---------- theme ---------- */
   const root = document.documentElement;
+  if (location.protocol === 'file:') $('#console-link').hidden = true;
   const isDark = () => {
     const set = root.getAttribute('data-theme');
     return set ? set === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
