@@ -1,0 +1,22 @@
+{
+  "task": "14-double-fault",
+  "run": 2,
+  "model_requested": "gpt-6-luna",
+  "model_reported": "gpt-6-luna",
+  "asked_at_utc": "2026-11-06T18:23:01.065953+00:00",
+  "prompt_sha256": "1ebf2d70c5c5ed1de5e0ef960b74e80ac13742877f6b9fca969d8bd377c0f22b",
+  "prompt_file": "tasks/14-double-fault/prompt.txt",
+  "usage": {
+    "input_tokens": 7364,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 7361
+    },
+    "output_tokens": 1576,
+    "output_tokens_details": {
+      "reasoning_tokens": 1034
+    },
+    "total_tokens": 8940
+  },
+  "answer": "There are **two independent faults**, both on the required session-request path:\n\n- **notify-relay:** At 14:02:15, traffic jumped from about 200 req/s to over 1,500 req/s and utilization reached 100%. The log shows Chatline returning 429s at its **1,000 req/s global quota**. The timing matches the v4.12.0 post-deploy bulk message-cleanup job. This is driving dependency failures and elevated latency.\n- **meta-index:** Errors began after the 14:01:38 key rotation. The log identifies prod replica `mi-1` using staging key `lw-meta-key-2`; repair that replica. This fault predates the cleanup job and will remain after notify-relay recovers.\n\n**Do now:**\n1. Stop the session-api `msg-cleanup` bulk DELETE job; do not resume it during recovery.\n2. Enforce a **global Chatline outbound limit of 1,000 req/s** on notify-relay. Honor Chatline\u2019s `retry_after=1.0s` for 429s; do not immediately retry rejected calls.\n3. Replace `mi-1`\u2019s staging key with the valid production key used by the other two meta-index replicas. The literal production key is not present in this telemetry, so retrieve it from the production secret store; do not use `lw-meta-key-2`.\n\nDo not scale notify-relay as a substitute for rate limiting: Chatline\u2019s quota is global. Verify recovery by checking that notify-relay is below the quota and no longer saturated, and that meta-index 401s stop.\n\n```json\n{\"root_cause_service\": \"notify-relay and meta-index\", \"mechanism\": \"The post-deploy bulk message-cleanup job drove notify-relay above Chatline's 1000 req/s global quota, causing 429s and required session-api dependency failures; separately, prod meta-index replica mi-1 used the staging-rotated key lw-meta-key-2 and returned 401s.\", \"actions\": [\"Stop the session-api v4.12.0 msg-cleanup bulk DELETE job now; do not resume it during recovery.\", \"Set notify-relay's global Chatline outbound limit to 1000 req/s and honor Chatline 429 retry_after=1.0s; do not immediately retry rejected calls.\", \"Replace prod meta-index replica mi-1's lw-meta-key-2 with the valid production key used by the other two replicas; retrieve the literal value from the production secret store because it is not given in the telemetry.\"]}\n```"
+}
